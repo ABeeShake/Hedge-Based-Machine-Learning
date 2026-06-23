@@ -1,0 +1,58 @@
+# Python / IDE
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+dist/
+build/
+*.so
+
+# Virtual environments
+hedge-env/
+venv/
+.venv/
+env/
+
+# PyTorch Lightning
+lightning_logs/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Large log files
+*.log
+output_logs/
+
+# Scratch / intermediate output directories
+scratch/
+Outputs/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Overleaf related files
+overleaf/
+
+# Large root-level raw log
+output-data_weinstock_stdout.log
+
+# Internal notes not intended for public release
+methods_outline.md
+results_outline.md
+
+# Data files
+cgmacros/
+weinstock/
+
+# Old files
+archive/

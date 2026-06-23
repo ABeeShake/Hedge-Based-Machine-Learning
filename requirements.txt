@@ -1,0 +1,28 @@
+# HBML — Hedge-Based Machine Learning for CGM Glucose Forecasting
+# Direct dependencies only. Tested with Python 3.10+.
+# Install with: pip install -r requirements.txt
+#
+# GPU note: torch, lightning, neuralforecast, and torchdyn all support
+# CUDA automatically when a compatible GPU and CUDA toolkit are available.
+# On a CPU-only machine everything still runs; Neural ODE and N-HITS will
+# simply be slower.
+
+# ── Core scientific stack ─────────────────────────────────────────────────────
+numpy>=1.26,<3
+pandas>=2.0,<3
+scipy>=1.10,<2
+scikit-learn>=1.3,<2
+
+# ── Deep learning ─────────────────────────────────────────────────────────────
+torch>=2.1,<3
+lightning>=2.1,<3          # PyTorch Lightning training loop
+torchdiffeq>=0.2.4         # ODE solver backend for Neural ODE
+torchdyn>=1.0.5            # Neural ODE model construction
+
+# ── Forecasting libraries ──────────────────────────────────────────────────────
+statsforecast>=2.0,<3      # AutoARIMA, AutoETS (StatsForecast)
+neuralforecast>=2.0,<4     # N-HITS (NeuralForecast)
+xgboost>=1.7,<4            # XGBoost gradient-boosted trees
+
+# ── Plotting ──────────────────────────────────────────────────────────────────
+matplotlib>=3.7,<4

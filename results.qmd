@@ -1,0 +1,577 @@
+
+```{python}
+
+import os
+import re
+
+import numpy as np
+import pandas as pd
+import ExpMethods.utils as util
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+
+from glob import glob
+from linecache import getline
+from itertools import product
+from scipy.stats import wilcoxon, bootstrap
+from ExpMethods.globals import GlobalValues
+
+```
+
+
+# Post Processing
+
+## find corrupted IDs for Weinstock
+
+```{python}
+
+all_files = glob("../weinstock/**/*_forecasts.csv", recursive = True)
+
+corrupted_paths = [file for file in all_files if re.search(r"^[0\.,]+$", getline(file, 23))]
+
+corrupted_files = [re.findall("../(.*)/h-(.{1,4})hr/context-(.{1,4})hr/.*/(\d{3})", file)[0] for file in corrupted_paths]
+
+comparison_cols = ["dataset","horizon","context","id"]
+
+corrupted_df = pd.DataFrame(corrupted_files, columns = comparison_cols)
+
+corrupted_df
+
+```
+
+
+
+# RMSE Analysis
+
+```{python}
+
+def is_outlier(x):
+    q1, q3 = x.quantile(0.25), x.quantile(0.75)
+    
+    iqr = q3 - q1
+    
+    lower = q1 - 1.5*iqr
+    upper = q3 + 1.5*iqr
+
+    return np.logical_or(x > upper, x < lower).values
+
+
+#idx_outlier(min_rmse.rmse)
+
+```
+
+
+```{python}
+
+rmse = pd.read_csv("../full_rmse.csv")
+
+rmse = rmse.dropna(axis=0)
+
+rmse.id = rmse.id.astype(str).str.pad(width=3,side="left",fillchar="0")
+
+# merged = pd.merge(rmse, corrupted_df, how = "outer", on = comparison_cols, indicator = True)
+# 
+# rmse = merged[merged["_merge"] == "left_only"].drop("_merge",axis=1)
+
+```
+
+
+```{python}
+
+min_idx = rmse.groupby(["dataset","horizon","context","model","id"])["rmse"].idxmin()
+
+min_rmse = rmse.loc[min_idx].drop(["eta"],axis=1)
+    
+na_idx = min_rmse.loc[min_rmse.rmse.isna(),"id"]
+    
+min_rmse = min_rmse.loc[np.logical_not(min_rmse.id.isin(na_idx))]
+
+min_rmse = min_rmse.loc[np.logical_not(min_rmse.model.isin(["HBML (c)","HBML (d)"])),:]
+min_rmse.loc[min_rmse.model == "HBML (fd)","model"] = "HBML"
+min_rmse.loc[min_rmse.horizon == "half","horizon"] = "0.5"
+
+# min_rmse["outlier"] = min_rmse.drop("id",axis=1).groupby(["dataset","horizon","context","model"]).transform(lambda group: is_outlier(group))
+# 
+cleaned_rmse = min_rmse
+
+#p.logical_and(min_rmse.horizon == "5", min_rmse.rmse > 350)
+
+#min_rmse.loc[(min_rmse.dataset == "cgmacros") & (min_rmse.horizon == "2") & (rmse.context == "6"),"rmse"].describe()
+
+# rmse.loc[(rmse.index.isin(min_idx)) & (rmse.dataset == "cgmacros") & (rmse.horizon == "half") & (rmse.model == "HBML (fd)"),["eta"]]
+
+```
+
+
+```{python}
+
+# combinations = list(product(*[min_rmse[col].unique() for col in ["dataset","horizon","context"]]))
+# 
+# c_map = GlobalValues.color_params
+# 
+# for d,h,c in combinations:
+#     
+#     group = min_rmse.loc[(min_rmse.dataset == d) & (min_rmse.horizon == h) & (min_rmse.context == c)]
+#     
+#     plt.close("all")
+#     #fix,ax = plt.subplots()
+#     group.groupby("model").boxplot(subplots = False, column="rmse")
+#     plt.title(f"dataset {d} horizon {h} context {c}")
+#     #plt.legend(labels = list(c_map.keys), labelcolor = list(c_map.values))
+#     plt.show()
+
+```
+
+
+
+```{python}
+
+cleaned_rmse = cleaned_rmse.groupby(["dataset","horizon","context","model"]).rmse.apply(lambda x: pd.Series({"mean": np.round(x.mean(),2), "sd": np.round(x.std(),2)}, index = ["mean","sd"]))
+
+cleaned_rmse = cleaned_rmse.reset_index().pivot(index = ["dataset","horizon","context","model"], columns = ["level_4"], values = "rmse").reset_index()
+
+model_order = dict(ARIMA=0,ETS=1,NHITS=2,NODE=3,XGBoost=4,HBML=5)
+horizon_order = {"0.5":0,"2":1,"5":2}
+dataset_order = {"cgmacros":0,"weinstock":1}
+
+cleaned_pivot = cleaned_rmse.pivot(index = ["horizon","model","dataset"],columns=["context"],values=["mean","sd"])
+
+cleaned_pivot = cleaned_pivot.sort_values(by = ["dataset","horizon","model"], key = lambda x: x.map(dataset_order | horizon_order | model_order)).reset_index()
+
+cleaned_pivot['h_freq'] = cleaned_pivot.groupby('horizon')['horizon'].transform('count')
+
+cleaned_pivot["htab"] = np.where(cleaned_pivot.horizon.shift() == cleaned_pivot.horizon, "", "\multirow[t]{"+cleaned_pivot['h_freq'].astype(str)+"}{*}{"+cleaned_pivot['horizon'].astype(str)+"}")
+
+
+cleaned_pivot.columns = cleaned_pivot.columns.map(lambda x: x[0] if not ({"mean","sd"} & set(x) ) else ".".join(x))
+
+cleaned_pivot["endings"] = np.where(
+    np.logical_and(
+        cleaned_pivot["htab"].shift(-1) != "",
+        cleaned_pivot.dataset.shift(-1) == cleaned_pivot.dataset
+        ), "\\\\\cmidrule{1-6}","\\\\")
+
+ cleaned_pivot.loc[cleaned_pivot.shape[0]-1,"endings"] = "\\\\"
+
+cleaned_pivot.to_csv("../overleaf/tables/rmse_pivot.csv",index=False)
+
+#min_pivot
+
+```
+
+# Clarke Error Grid Analysis
+
+
+```{python}
+
+ceg = pd.read_csv("../full_ceg.csv")
+
+ceg.id = ceg.id.astype(str).str.pad(width=3,side="left",fillchar="0")
+
+# merged = pd.merge(ceg, corrupted_df, how = "outer", on = comparison_cols, indicator = True)
+# 
+# ceg = merged[merged["_merge"] == "left_only"].drop("_merge",axis=1)
+
+```
+
+
+```{python}
+
+ceg.loc[ceg.horizon == "half","horizon"] = "0.5"
+
+# merged = pd.merge(ceg, min_rmse[min_rmse.outlier], on = ["dataset","horizon","context","id"], how = "left", indicator = True)
+# 
+# ceg = merged[merged["_merge"] == "left_only"].drop(["_merge"] + [col for col in merged.columns if merged[col].isna().any()],axis=1)
+
+ceg["A+B"] = ceg.A + ceg.B
+ceg["C+D"] = ceg.C + ceg.D
+ceg["total"] = ceg.A + ceg.B + ceg.C + ceg.D + ceg.E
+
+# ceg.head()
+
+setting_cols = ["dataset","horizon","context"]
+div_cols = ["A","B","C","D","E","A+B","C+D"]
+pct_cols = [col + "pct" for col in div_cols]
+
+ceg.loc[:,pct_cols] = 100*ceg.loc[:,div_cols].div(ceg.total,axis=0).values
+
+```
+
+
+```{python}
+
+ceg = ceg.loc[ceg["A+Bpct"] > 50]
+
+max_ceg = ceg.loc[ceg.groupby(setting_cols + ["id"]).A.idxmax()].drop(["eta","id"],axis=1).groupby(setting_cols).mean().reset_index()
+
+#max_ceg["dataset"] = "weinstock"
+max_ceg.loc[:,pct_cols + setting_cols] = np.round(max_ceg.loc[:,pct_cols + setting_cols],2)
+
+#max_ceg.to_csv("../weinstock/max_ceg.csv", index = False)
+
+```
+
+
+## Table CSV Files
+
+```{python}
+
+#max_ceg.loc[max_ceg.horizon == "half","horizon"] = "0.5"
+
+context_order = {"6":0,"12":1,"24":2,"full":3}
+
+
+max_ceg = max_ceg.sort_values(by=setting_cols, key = lambda x: x.map(dataset_order | horizon_order | context_order)).drop(div_cols + ["total"], axis=1)
+
+```
+
+
+```{python}
+
+max_ceg["d_freq"] = max_ceg.groupby('dataset')['dataset'].transform('count')
+max_ceg["h_freq"] = max_ceg.groupby('horizon')['horizon'].transform('count')
+
+max_ceg["dataset"] = max_ceg["dataset"].map(dict(weinstock="Weinstock 2016", cgmacros = "CGMacros"))
+
+max_ceg["htab"] = np.where(max_ceg.horizon.shift() == max_ceg.horizon, "", "\multirow[t]{"+max_ceg['h_freq'].astype(str)+"}{*}{"+max_ceg['horizon'].astype(str)+"}")
+
+max_ceg["dtab"] = np.where(max_ceg.dataset.shift() == max_ceg.dataset, "", "\multirow[t]{"+max_ceg['d_freq'].astype(str)+"}{*}{"+max_ceg['dataset'].astype(str)+"}")
+
+max_ceg["endings"] = np.where(
+    np.logical_and(
+        max_ceg["htab"].shift(-1) != "",
+        max_ceg.dataset.shift(-1) == max_ceg.dataset
+        ), "\\\\\cmidrule{2-8}","\\\\")
+        
+max_ceg["endings"] = np.where(
+    np.logical_and(
+        max_ceg.dataset.shift(-1) != max_ceg.dataset,
+        max_ceg.dataset.shift(-1) != None
+),
+"\\\\\cmidrule{1-8}",max_ceg["endings"]
+)
+
+max_ceg.to_csv("../overleaf/tables/max_ceg.csv", index = False)
+
+```
+
+
+# Adaptive Regret
+
+
+```{python}
+
+combinations = list(product(rmse.dataset.unique(), rmse.horizon.unique(), rmse.context.unique(), rmse.eta.astype(int).astype(str).unique()))
+
+omit_models = ["Autoformer"]
+
+for d,h,c,e in combinations:
+    
+    # print(f"../{d}/h-{h}hr/context-{c}hr/regrets/*_regrets_eta{e}.csv")
+    # print(glob(f"../{d}/h-{h}hr/context-{c}hr/regrets/*_regrets_eta{e}.csv"))
+    
+    files = list(set(glob(f"../{d}/h-{h}hr/context-{c}hr/regrets/*_fullregrets_eta{e}.csv")))
+    
+    if not files:
+        continue
+    
+    n_files = len(files)
+    shapes = [pd.read_csv(path).shape for path in files]
+    max_len = max([shape[0] for shape in shapes])
+    max_col = max([shape[1] for shape in shapes])
+    
+    padded_arrays = []
+    
+    for path in files:
+        df = pd.read_csv(path)
+        cols_to_drop = list(set(df.columns) & set(omit_models))
+        df.drop(cols_to_drop,axis=1,inplace=True)
+        arr, cols = df.to_numpy(), df.columns
+        
+        #print(id_num)
+        
+        padded_arrays.append(
+            np.pad(
+                arr, 
+                (
+                    (0,max_len - len(arr)), 
+                    (0, max_col - arr.shape[1])
+                    ),
+                    mode = "constant",
+                    constant_values = np.nan)
+                    )
+                    
+    stacked_arr = np.stack(padded_arrays)
+    
+    
+    avg_regrets = pd.DataFrame(np.nanmean(stacked_arr, axis = 0), columns = cols)
+    q5_regrets = pd.DataFrame(np.nanquantile(stacked_arr, axis = 0, q = 0.05), columns = cols)
+    q95_regrets = pd.DataFrame(np.nanquantile(stacked_arr, axis = 0, q = 0.95), columns = cols)
+    
+    c_vals = {col: GlobalValues.color_params[col] if not col.startswith("HBML") else GlobalValues.color_params["HBML"] for col in avg_regrets}
+    ls_vals = {col: GlobalValues.linestyle_params[col] if col.startswith("HBML") else "-" for col in avg_regrets}
+    
+    extent = (100, max_len - 100, 0, np.max(avg_regrets))
+    
+    xmin, xmax, ymin, ymax = extent
+    
+    xmin_z, xmax_z = 0.8 * xmax, xmax
+    
+    ymin_z, ymax_z = .8 * avg_regrets.loc[xmin_z:xmax_z, "HBML (fd)"].min(), 1.2 * avg_regrets.loc[xmin_z:xmax_z, "HBML (fd)"].max()
+    
+    plt.close("all")
+    fig,ax = plt.subplots(figsize = (12,8))
+    axins = ax.inset_axes(
+        [0.025, .5, .4, .45],
+        xlim = (xmin_z, xmax_z), ylim = (ymin_z, ymax_z),
+        xticks = [], yticks = [],
+        )
+    for col in avg_regrets.columns:
+        if col in ["HBML (c)", "HBML (d)"]:
+            continue
+        
+        label = "HBML" if col.startswith("HBML") else col
+        ax.plot(avg_regrets.loc[xmin:xmax,col],
+        c=c_vals[col],ls=ls_vals[col], 
+        alpha = 1 - 0.3*(not col.startswith("HBML")),
+        label = label,
+        rasterized = True)
+        
+        axins.plot(avg_regrets.loc[xmin:xmax,col],
+        c=c_vals[col],ls=ls_vals[col], 
+        alpha = 1 - 0.3*(not col.startswith("HBML")),
+        label = label,
+        rasterized = True)
+        
+    ax.indicate_inset_zoom(axins, edgecolor="black")
+    ax.legend(loc='upper left', bbox_to_anchor=(1, 1), fontsize = "small")
+    ax.set_title(f"{d}: {h}-hour Horizon", fontsize = 24)
+    ax.set_xlim((xmin,xmax))
+    ax.set_ylim((ymin,ymax))
+    ax.set_xlabel("Time Elapsed (min)", fontsize = 20)
+    ax.set_ylabel("Regret Over Time ([mg/dL]/min)", fontsize = 20)
+    plt.savefig(f"../images/zoom_{d}_h{h}_c{c}_eta{e}.pdf",dpi=400, bbox_inches = "tight")
+
+    
+#avg_regrets
+
+```
+
+```{python}
+
+combinations = list(product(rmse.dataset.unique(), rmse.horizon.unique(), rmse.context.unique(), rmse.eta.astype(int).astype(str).unique()))
+
+omit_models = ["Autoformer"]
+
+for d,h,c,e in combinations:
+    
+    files = list(set(glob(f"../{d}/h-{h}hr/context-{c}hr/regrets/*_fullregrets_eta{e}.csv")) - set(corrupted_paths))
+    
+    if not files:
+        continue
+    
+    n_files = len(files)
+    shapes = [pd.read_csv(path).shape for path in files]
+    max_len = max([shape[0] for shape in shapes])
+    max_col = max([shape[1] for shape in shapes])
+    
+    padded_arrays = []
+    
+    for path in files:
+        df = pd.read_csv(path)
+        cols_to_drop = list(set(df.columns) & set(omit_models))
+        df.drop(cols_to_drop,axis=1,inplace=True)
+        arr, cols = df.to_numpy(), df.columns
+        
+        #print(id_num)
+        
+        padded_arrays.append(
+            np.pad(
+                arr, 
+                (
+                    (0,max_len - len(arr)), 
+                    (0, max_col - arr.shape[1])
+                    ),
+                    mode = "constant",
+                    constant_values = np.nan)
+                    )
+                    
+    stacked_arr = np.stack(padded_arrays)
+    
+    
+    avg_regrets = pd.DataFrame(np.nanmean(stacked_arr, axis = 0), columns = cols)
+    q5_regrets = pd.DataFrame(np.nanquantile(stacked_arr, axis = 0, q = 0.05), columns = cols)
+    q95_regrets = pd.DataFrame(np.nanquantile(stacked_arr, axis = 0, q = 0.95), columns = cols)
+    
+    c_vals = {col: GlobalValues.color_params[col] if not col.startswith("HBML") else GlobalValues.color_params["HBML"] for col in avg_regrets}
+    ls_vals = {col: GlobalValues.linestyle_params[col] if col.startswith("HBML") else "-" for col in avg_regrets}
+    
+    extent = (100, max_len - 100, 0, np.max(avg_regrets))
+    
+    xmin, xmax, ymin, ymax = extent
+    
+    xmin_z, xmax_z = 0.8 * xmax, xmax
+    
+    ymin_z, ymax_z = .8 * avg_regrets.loc[xmin_z:xmax_z, "HBML (fd)"].min(), 1.2 * avg_regrets.loc[xmin_z:xmax_z, "HBML (fd)"].max()
+    
+    plt.close("all")
+    fig,ax = plt.subplots(figsize = (12,8))
+    # axins = ax.inset_axes(
+    #     [0.025, .5, .4, .45],
+    #     xlim = (xmin_z, xmax_z), ylim = (ymin_z, ymax_z),
+    #     xticks = [], yticks = [],
+    #     )
+    for col in avg_regrets.columns:
+        if col in ["HBML (c)", "HBML (d)"]:
+            continue
+        
+        label = "HBML" if col.startswith("HBML") else col
+        ax.plot(avg_regrets[col],
+        c=c_vals[col],ls=ls_vals[col], 
+        alpha = 1 - 0.3*(not col.startswith("HBML")),
+        label = label,
+        rasterized = True)
+        
+        # axins.plot(avg_regrets[col],
+        # c=c_vals[col],ls=ls_vals[col], 
+        # alpha = 1 - 0.3*(not col.startswith("HBML")),
+        # label = label,
+        # rasterized = True)
+        
+    #ax.indicate_inset_zoom(axins, edgecolor="black")
+    ax.legend(loc='upper left', bbox_to_anchor=(1, 1), fontsize = "small")
+    ax.set_title(f"{d.capitalize()} ({h}-hour Horizon)", fontsize = 24)
+    ax.set_xlim((xmin,xmax))
+    ax.set_ylim((ymin,ymax))
+    ax.set_xlabel("Time Elapsed (min)", fontsize = 20)
+    ax.set_ylabel("Regret Over Time ([mg/dL]/min)", fontsize = 20)
+    plt.savefig(f"../images/{d}_h{h}_c{c}_eta{e}.pdf",dpi=400, bbox_inches = "tight")
+    
+#avg_regrets
+
+```
+
+# Weight Plot
+
+```{python}
+
+import ExpMethods.simulate as sim 
+import ExpMethods.utils as utils
+import ExpMethods.visualizations as viz
+
+```
+
+```{python}
+
+targets = utils.load_results_from_csv("../weinstock/data/110.csv")
+forecasts = utils.load_results_from_csv("../weinstock/h-5hr/context-fullhr/forecasts/110_forecasts.csv")
+losses = utils.load_results_from_csv("../weinstock/h-5hr/context-fullhr/losses/110_losses.csv")
+settings = utils.load_sim_settings("../weinstock/h-5hr/context-fullhr/settings/110.json")
+
+```
+
+
+```{python}
+
+_,_, W = sim.weighted_forecast(
+    forecasts, 
+    losses, 
+    mix_func = MixingMethods.FS_start_mix,
+    alpha_func = AlphaMethods.fastdecreasing_alpha,
+    save_weights = True,
+    **settings)
+
+```
+
+```{python}
+
+viz.plot_weights(W, names = forecasts.keys(), show = True, save = True, path = "../overleaf/images/methods/expert_weights_plot.pdf")
+
+```
+
+
+```{python}
+
+preds = pd.read_csv("../weinstock/h-halfhr/context-6hr/forecasts/103_fullforecasts_eta100.csv")["HBML (fd)"]
+ref = pd.read_csv("../weinstock/data/103.csv")["Libre.GL"]
+
+viz.clarke_error_grid(ref,preds,show=True)
+
+```
+
+
+# CGMacros Diabetic Status Analysis
+
+```{python}
+
+# Load Diabetic Mappings
+diab_order = {"T2D":0, "pre-T2D":1, "non-T2D":2}
+
+diabetic_map = {}
+for status, key in [("T2D", "diabetic_ids"), ("pre-T2D", "prediabetic_ids"), ("non-T2D", "nondiabetic_ids")]:
+    for pat_id in GlobalValues.CGMacros.get(key, []):
+        diabetic_map[pat_id] = status
+
+def get_diabetic_status(patient_id):
+    return diabetic_map.get(str(patient_id).zfill(3), "Unknown")
+
+```
+
+```{python}
+
+# RMSE Analysis by Diabetic Status
+cgmacros_rmse = min_rmse[min_rmse.dataset == "cgmacros"].copy()
+cgmacros_rmse.loc[:, "diabetic_status"] = cgmacros_rmse["id"].apply(get_diabetic_status)
+
+diab_rmse = cgmacros_rmse.groupby(["diabetic_status", "horizon", "context", "model"]).rmse.apply(lambda x: pd.Series({"mean": np.round(x.mean(),2), "sd": np.round(x.std(),2)}, index = ["mean","sd"]))
+diab_rmse = diab_rmse.reset_index().pivot(index = ["diabetic_status", "horizon", "context", "model"], columns = ["level_4"], values = "rmse").reset_index()
+
+diab_pivot = diab_rmse.pivot(index = ["horizon", "model", "diabetic_status"], columns=["context"], values=["mean","sd"])
+diab_pivot = diab_pivot.sort_values(by = ["diabetic_status", "horizon", "model"], key = lambda x: x.map(diab_order | horizon_order | model_order)).reset_index()
+
+diab_pivot['h_freq'] = diab_pivot.groupby('horizon')['horizon'].transform('count')
+diab_pivot["htab"] = np.where(diab_pivot.horizon.shift() == diab_pivot.horizon, "", "\\multirow[t]{"+diab_pivot['h_freq'].astype(str)+"}{*}{"+diab_pivot['horizon'].astype(str)+"}")
+
+diab_pivot.columns = diab_pivot.columns.map(lambda x: x[0] if not ({"mean","sd"} & set(x) ) else ".".join(x))
+
+diab_pivot["endings"] = np.where(
+    np.logical_and(
+        diab_pivot["htab"].shift(-1) != "",
+        diab_pivot.diabetic_status.shift(-1) == diab_pivot.diabetic_status
+        ), "\\\\\\cmidrule{1-6}","\\\\\\")
+
+diab_pivot.loc[diab_pivot.shape[0]-1,"endings"] = "\\\\\\"
+
+diab_pivot.to_csv("../overleaf/tables/rmse_cgmacros_diabetic.csv", index=False)
+
+```
+
+
+```{python}
+
+# Clarke Error Grid Analysis by Diabetic Status
+cgmacros_ceg = ceg[ceg.dataset == "cgmacros"].copy()
+cgmacros_ceg.loc[:, "diabetic_status"] = cgmacros_ceg["id"].apply(get_diabetic_status)
+
+diab_max_ceg = cgmacros_ceg.loc[cgmacros_ceg.groupby(["diabetic_status", "horizon", "context", "id"]).A.idxmax()].drop(["eta", "id", "dataset"], axis=1, errors='ignore').groupby(["diabetic_status", "horizon", "context"]).mean(numeric_only=True).reset_index()
+
+diab_max_ceg.loc[:, pct_cols + ["horizon", "context"]] = np.round(diab_max_ceg.loc[:, pct_cols + ["horizon", "context"]], 2)
+
+diab_max_ceg = diab_max_ceg.sort_values(by=["diabetic_status", "horizon", "context"], key = lambda x: x.map(diab_order | horizon_order | context_order)).drop(div_cols + ["total"], axis=1, errors='ignore')
+
+# Splitting CEG Diabetic Table
+for status in ["T2D", "pre-T2D", "non-T2D"]:
+    subset = diab_max_ceg[diab_max_ceg["diabetic_status"] == status].copy()
+    if not subset.empty:
+        subset["h_freq"] = subset.groupby('horizon')['horizon'].transform('count')
+        subset["htab"] = np.where(subset.horizon.shift() == subset.horizon, "", "\\multirow[t]{"+subset['h_freq'].astype(str)+"}{*}{"+subset['horizon'].astype(str)+"}")
+        
+        subset["endings"] = np.where(
+            subset["htab"].shift(-1) != "",
+            "\\\\\\cmidrule{2-8}", "\\\\\\"
+        )
+        
+        filename = f"../overleaf/tables/ceg_cgmacros_{status}.csv"
+        subset.to_csv(filename, index=False)
+
+```
