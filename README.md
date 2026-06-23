@@ -5,17 +5,12 @@
 
 This repository contains the full implementation for the paper:
 
-> **[Paper Title]**
-> [Author Names]
-> *npj Digital Medicine*, [Year].
+> **Personalized Real-Time Blood Glucose Prediction via Hedging-Based Machine Learning**
+> Abhishek Devarajan
+> *Unpublished*.
 > [DOI / Link]
 
-HBML is an adaptive online ensemble framework for real-time, personalized
-continuous glucose monitoring (CGM) forecasting. It combines six heterogeneous
-expert forecasting models under the AdaHedge algorithm with Fixed-Share mixing,
-enabling the ensemble to track the best-performing expert as a patient's glucose
-dynamics evolve over time - without any population-level pretraining or
-patient-specific hyperparameter tuning.
+Real-time glucose forecasting supports diabetes management by giving early warning of hypo- and hyperglycemic events. Population-trained models generalize poorly to individuals, personalized models are limited by small, non-stationary datasets, and no single model is best across all patients, physiological states, and horizons. We formulate personalized glucose forecasting as an online prediction-with-expert-advice problem and introduce Hedge-Based Machine Learning (HBML), which maintains diverse experts, ARIMA, exponential smoothing, XGBoost, Neural ODE, and NHITS, and reweights them in real time from each patient's own data. Built on the Fixed-Share algorithm with an AdaHedge adaptive learning rate, HBML carries adaptive-regret guarantees and needs no population-level training and no per-patient tuning. Across two continuous glucose monitoring datasets spanning type 1, type 2, pre-diabetic, and non-diabetic patients (n=145), HBML performend better than the best expert at every horizon, with over 99\% of 30-minute forecasts in Clarke Error Grid Zones A+B, indicating accurate, reliable personalized forecasting without population data.
 
 ---
 
@@ -51,17 +46,9 @@ HedgeProject/
 │   ├── visualizations.py      # Plotting utilities (Clarke Error Grid, weights, etc.)
 │   └── globals.py             # Shared constants, model defaults, color palettes
 │
-├── cgmacros/                  # Per-patient CGMacros CSVs (see Data Setup below)
-├── weinstock/                 # Per-patient Weinstock 2016 CSVs (see Data Setup below)
-│
 ├── overleaf/                  # LaTeX paper source
 │   ├── tables/                # Result CSV files imported by LaTeX
 │   └── sections/              # Paper section .tex files
-│
-├── rmse.csv                   # Aggregated RMSE results (all patients, all settings)
-├── maxae.csv                  # Aggregated Max-AE results
-│
-└── archive/                   # Development/exploratory scripts (not part of pipeline)
 ```
 
 ---
@@ -70,11 +57,7 @@ HedgeProject/
 
 ### CGMacros (2025)
 
-CGMacros is publicly available on PhysioNet:
-
-```
-https://physionet.org/content/cgmacros/
-```
+CGMacros is publicly available on [PhysioNet](https://physionet.org/content/cgmacros/):
 
 Download the dataset, extract the per-patient CSV files, and place them in
 `./cgmacros/`. Each file should be named `<patient_id>.csv` and contain at
@@ -83,7 +66,7 @@ readings in mg/dL).
 
 ### Weinstock 2016
 
-Weinstock et al. (2016) is available through the study data repository.
+Weinstock et al. (2016) is available through [Awesome-CGM](https://github.com/IrinaStatsLab/Awesome-CGM).
 Place per-patient CSV files in `./weinstock/`. Each file should contain a
 `Timestamp` column and a `Dexcom.GL` column.
 
