@@ -54,5 +54,9 @@ results_outline.md
 cgmacros/
 weinstock/
 
+# Results files
+rmse.csv
+maxae.csv
+
 # Old files
 archive/
