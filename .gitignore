@@ -60,3 +60,6 @@ maxae.csv
 
 # Old files
 archive/
+
+# Audit File
+HBMLAudit.html

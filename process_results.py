@@ -234,8 +234,11 @@ def get_methods(settings, **kwargs):
             methods[method]["alpha_func"] = alpha_funcs[method]
             
     for method in methods.keys():
-        methods[method]["start"] = settings["start"]
-        methods[method]["end"] = settings["end"]
+        methods[method]["start"]   = settings["start"]
+        methods[method]["end"]     = settings["end"]
+        # Fix: forward the true experiment horizon so the aggregator does not
+        # default to horizon=1 for 2-hour and 5-hour experiments.
+        methods[method]["horizon"] = settings["horizon"]
     
     return methods
 
@@ -294,6 +297,8 @@ def get_methods_adaptive(settings, **kwargs):
         methods[method]["alpha_func"] = resolved_alpha[method]
         methods[method]["start"]      = settings["start"]
         methods[method]["end"]        = settings["end"]
+        # Fix: forward the true experiment horizon.
+        methods[method]["horizon"]    = settings["horizon"]
 
     return methods
 
@@ -312,6 +317,9 @@ def get_methods_advanced(settings, **kwargs):
     base = dict(
         start=settings["start"],
         end=settings["end"],
+        # Fix: forward the true experiment horizon so SFH/SFHDF aggregators
+        # do not default to horizon=1 for multi-step experiments.
+        horizon=settings["horizon"],
         save_weights=True,
         forecast_type=forecast_type,
     )
@@ -424,7 +432,10 @@ def find_best_sfhdf_gamma(forecast_dir, data_dir, settings_dir, target_col,
         for _, forecasts, losses, settings in patient_data:
             exp_f, exp_l = sim.scale_free_hedge_df_forecast(
                 forecasts, losses, gamma=gamma,
-                save_weights=False, forecast_type="mean", **settings
+                save_weights=False, forecast_type="mean",
+                # horizon is already inside settings (loaded from JSON) so
+                # **settings handles it; no extra kwarg needed here.
+                **settings
             )
             valid = exp_l[100:-10]
             rmse_sum += np.sqrt(np.nanmean(valid)) if len(valid) > 0 and not np.isnan(valid).all() else 0.0
@@ -600,7 +611,8 @@ def main():
             losses = sim.get_online_losses(forecasts, targets, **settings)
             
             methods = get_methods(settings, eta=args.eta, mix_funcs=mix_funcs, alpha_funcs=alpha_funcs, update_loss_type=args.update_loss_type)
-            exp_forecasts, exp_losses, exp_weights = sim.get_weighted_forecasts(forecasts, losses, methods, **settings)
+            # Pass targets so aggregators record (ŷ - y)² instead of weighted expert losses.
+            exp_forecasts, exp_losses, exp_weights = sim.get_weighted_forecasts(forecasts, losses, methods, targets=targets, **settings)
             
             full_forecasts = forecasts | exp_forecasts
             full_losses = losses | exp_losses
@@ -630,8 +642,9 @@ def main():
                     settings, eta=args.eta, update_loss_type=args.update_loss_type, norm_type=args.norm_type
                 )
                 if ae_methods:
+                    # Pass targets so aggregators record (ŷ - y)² instead of weighted expert losses.
                     ae_exp_forecasts, ae_exp_losses, ae_exp_weights = get_weighted_forecasts_adaptive(
-                        forecasts, losses, ae_methods, **settings
+                        forecasts, losses, ae_methods, targets=targets, **settings
                     )
                     ae_full_forecasts = forecasts | ae_exp_forecasts
                     ae_full_losses    = losses    | ae_exp_losses
@@ -663,8 +676,9 @@ def main():
                 adv_methods = get_methods_advanced(
                     settings, eta=args.eta, norm_type=args.norm_type, gamma=sfhdf_gamma
                 )
+                # Pass targets so aggregators record (ŷ - y)² instead of weighted expert losses.
                 adv_exp_forecasts, adv_exp_losses, adv_exp_weights = get_weighted_forecasts_advanced(
-                    forecasts, losses, adv_methods
+                    forecasts, losses, adv_methods, targets=targets
                 )
                 adv_full_forecasts = forecasts | adv_exp_forecasts
                 adv_full_losses    = losses    | adv_exp_losses

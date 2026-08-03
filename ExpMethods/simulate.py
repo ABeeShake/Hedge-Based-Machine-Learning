@@ -199,6 +199,12 @@ def weighted_forecast(forecasts, losses,**kwargs):
     save_weights = kwargs.get("save_weights", False)
     forecast_type = kwargs.get("forecast_type", "sample")
     norm_type = kwargs.get("norm_type", "shift")  # 'shift': l-min(l)  |  'ratio': l/max(l)
+    # Fix: accept ground-truth targets so the recorded loss for the weighted-mean
+    # prediction is (ŷ - y)² rather than Σ_k w_k (f̂_k - y)², which over-estimates
+    # the true MSE by the weighted variance among expert forecasts.
+    targets_arr = kwargs.get("targets", None)
+    if targets_arr is not None:
+        targets_arr = utils.to_np(targets_arr).ravel()
     
     if from_file:
         if isinstance(forecasts, str) and isinstance(losses, str) and isinstance(targets, str):
@@ -294,7 +300,15 @@ def weighted_forecast(forecasts, losses,**kwargs):
             if forecast_type == "mean":
                 # Weighted average: provably lower MSE than sampling (Jensen's ineq.)
                 exp_forecasts[t_target] = np.nansum(Wt_norm * f_mat[t_target])
-                exp_losses[t_target]    = np.nansum(Wt_norm * l_mat[t_target])
+                # Fix: record the true squared error of the weighted-mean prediction.
+                # The weighted sum of expert losses over-estimates the actual MSE by
+                # the weighted variance among expert forecasts.
+                if targets_arr is not None and t_target < len(targets_arr):
+                    exp_losses[t_target] = (exp_forecasts[t_target] - targets_arr[t_target]) ** 2
+                else:
+                    # Fallback: weighted expert losses (old behaviour, used when
+                    # targets are not supplied, e.g. in legacy call sites).
+                    exp_losses[t_target] = np.nansum(Wt_norm * l_mat[t_target])
             else:
                 # Original sampling behaviour
                 jt = np.random.choice(m, p = Wt_norm)
@@ -509,12 +523,18 @@ class EtaMethods:
 def get_weighted_forecasts(forecasts, losses, methods, **kwargs):
     
     exp_forecasts, exp_losses, exp_weights = dict(), dict(), dict()
+
+    # Forward targets (if provided) so the weighted_forecast function records
+    # the correct squared error of the weighted-mean prediction.
+    targets = kwargs.get("targets", None)
     
     for name, settings in methods.items():
         
         #print(f"Forecasting for {name}")
-        
-        results = weighted_forecast(forecasts, losses, **settings)
+        call_settings = dict(settings)
+        if targets is not None:
+            call_settings["targets"] = targets
+        results = weighted_forecast(forecasts, losses, **call_settings)
         if len(results) == 3:
             exp_forecasts[name], exp_losses[name], exp_weights[name] = results
         else:
@@ -550,6 +570,10 @@ def weighted_forecast_adaptive_eta(forecasts, losses, **kwargs):
     forecast_type = kwargs.get("forecast_type", "sample")
 
     norm_type = kwargs.get("norm_type", "shift")  # 'shift': l-min(l)  |  'ratio': l/max(l)
+    # Fix: accept ground-truth targets to record the correct RMSE estimand.
+    targets_arr = kwargs.get("targets", None)
+    if targets_arr is not None:
+        targets_arr = utils.to_np(targets_arr).ravel()
 
     if from_file:
         if isinstance(forecasts, str) and isinstance(losses, str):
@@ -652,7 +676,11 @@ def weighted_forecast_adaptive_eta(forecasts, losses, **kwargs):
             Wt_norm = Wt / Wt.sum()
             if forecast_type == "mean":
                 exp_forecasts[t_target] = np.nansum(Wt_norm * f_mat[t_target])
-                exp_losses[t_target]    = np.nansum(Wt_norm * l_mat[t_target])
+                # Fix: record the true squared error of the weighted-mean prediction.
+                if targets_arr is not None and t_target < len(targets_arr):
+                    exp_losses[t_target] = (exp_forecasts[t_target] - targets_arr[t_target]) ** 2
+                else:
+                    exp_losses[t_target] = np.nansum(Wt_norm * l_mat[t_target])
             else:
                 jt = np.random.choice(m, p=Wt_norm)
                 exp_forecasts[t_target] = f_mat[t_target][jt]
@@ -676,8 +704,15 @@ def get_weighted_forecasts_adaptive(forecasts, losses, methods, **kwargs):
     """
     exp_forecasts, exp_losses, exp_weights = dict(), dict(), dict()
 
+    # Forward targets (if provided) so the adaptive-eta function records
+    # the correct squared error of the weighted-mean prediction.
+    targets = kwargs.get("targets", None)
+
     for name, settings in methods.items():
-        results = weighted_forecast_adaptive_eta(forecasts, losses, **settings)
+        call_settings = dict(settings)
+        if targets is not None:
+            call_settings["targets"] = targets
+        results = weighted_forecast_adaptive_eta(forecasts, losses, **call_settings)
         if len(results) == 3:
             exp_forecasts[name], exp_losses[name], exp_weights[name] = results
         else:
@@ -782,6 +817,10 @@ def variable_share_forecast(forecasts, losses, **kwargs):
     alpha_vs_scale = kwargs.get("alpha_vs_scale", 1.0)
     save_weights   = kwargs.get("save_weights",   False)
     forecast_type  = kwargs.get("forecast_type",  "sample")
+    # Fix: accept ground-truth targets to record the correct RMSE estimand.
+    targets_arr = kwargs.get("targets", None)
+    if targets_arr is not None:
+        targets_arr = utils.to_np(targets_arr).ravel()
 
     if start is None or not end:
         raise ValueError("Must have start and end times")
@@ -836,7 +875,11 @@ def variable_share_forecast(forecasts, losses, **kwargs):
             Wt_norm = Wt / Wt.sum()
             if forecast_type == "mean":
                 exp_forecasts[t_target] = np.nansum(Wt_norm * f_mat[t_target])
-                exp_losses[t_target]    = np.nansum(Wt_norm * l_mat[t_target])
+                # Fix: record the true squared error of the weighted-mean prediction.
+                if targets_arr is not None and t_target < len(targets_arr):
+                    exp_losses[t_target] = (exp_forecasts[t_target] - targets_arr[t_target]) ** 2
+                else:
+                    exp_losses[t_target] = np.nansum(Wt_norm * l_mat[t_target])
             else:
                 jt = np.random.choice(m, p=Wt_norm)
                 exp_forecasts[t_target] = f_mat[t_target][jt]
@@ -977,6 +1020,10 @@ def scale_free_hedge_forecast(forecasts, losses, **kwargs):
     end      = kwargs.get("end",      None)
     save_weights  = kwargs.get("save_weights",  False)
     forecast_type = kwargs.get("forecast_type", "sample")
+    # Fix: accept ground-truth targets to record the correct RMSE estimand.
+    targets_arr = kwargs.get("targets", None)
+    if targets_arr is not None:
+        targets_arr = utils.to_np(targets_arr).ravel()
 
     if start is None or not end:
         raise ValueError("Must have start and end times")
@@ -1024,7 +1071,11 @@ def scale_free_hedge_forecast(forecasts, losses, **kwargs):
             Wt_norm = Wt / Wt.sum()
             if forecast_type == "mean":
                 exp_forecasts[t_target] = np.nansum(Wt_norm * f_mat[t_target])
-                exp_losses[t_target]    = np.nansum(Wt_norm * l_mat[t_target])
+                # Fix: record the true squared error of the weighted-mean prediction.
+                if targets_arr is not None and t_target < len(targets_arr):
+                    exp_losses[t_target] = (exp_forecasts[t_target] - targets_arr[t_target]) ** 2
+                else:
+                    exp_losses[t_target] = np.nansum(Wt_norm * l_mat[t_target])
             else:
                 jt = np.random.choice(m, p=Wt_norm)
                 exp_forecasts[t_target] = f_mat[t_target][jt]
@@ -1033,7 +1084,6 @@ def scale_free_hedge_forecast(forecasts, losses, **kwargs):
     if save_weights:
         return exp_forecasts, exp_losses, WT
     return exp_forecasts, exp_losses
-
 
 
 def scale_free_hedge_df_forecast(forecasts, losses, **kwargs):
@@ -1064,6 +1114,10 @@ def scale_free_hedge_df_forecast(forecasts, losses, **kwargs):
     gamma    = float(kwargs.get("gamma", 0.2))   # decay rate for L_max
     save_weights  = kwargs.get("save_weights",  False)
     forecast_type = kwargs.get("forecast_type", "sample")
+    # Fix: accept ground-truth targets to record the correct RMSE estimand.
+    targets_arr = kwargs.get("targets", None)
+    if targets_arr is not None:
+        targets_arr = utils.to_np(targets_arr).ravel()
 
     if start is None or not end:
         raise ValueError("Must have start and end times")
@@ -1110,7 +1164,11 @@ def scale_free_hedge_df_forecast(forecasts, losses, **kwargs):
             Wt_norm = Wt / Wt.sum()
             if forecast_type == "mean":
                 exp_forecasts[t_target] = np.nansum(Wt_norm * f_mat[t_target])
-                exp_losses[t_target]    = np.nansum(Wt_norm * l_mat[t_target])
+                # Fix: record the true squared error of the weighted-mean prediction.
+                if targets_arr is not None and t_target < len(targets_arr):
+                    exp_losses[t_target] = (exp_forecasts[t_target] - targets_arr[t_target]) ** 2
+                else:
+                    exp_losses[t_target] = np.nansum(Wt_norm * l_mat[t_target])
             else:
                 jt = np.random.choice(m, p=Wt_norm)
                 exp_forecasts[t_target] = f_mat[t_target][jt]
@@ -1145,10 +1203,17 @@ def get_weighted_forecasts_advanced(forecasts, losses, methods, **kwargs):
     """
     exp_forecasts, exp_losses, exp_weights = {}, {}, {}
 
+    # Forward targets (if provided) so each algorithm can record the correct
+    # squared error of the weighted-mean prediction rather than weighted expert losses.
+    targets = kwargs.get("targets", None)
+
     for name, settings in methods.items():
         method_type = settings.get("method_type", "adaptive_eta")
         fn = _ADVANCED_FORECAST_FUNCS.get(method_type, weighted_forecast_adaptive_eta)
-        results = fn(forecasts, losses, **settings)
+        call_settings = dict(settings)
+        if targets is not None:
+            call_settings["targets"] = targets
+        results = fn(forecasts, losses, **call_settings)
         if len(results) == 3:
             exp_forecasts[name], exp_losses[name], exp_weights[name] = results
         else:
