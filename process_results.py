@@ -304,20 +304,29 @@ def get_methods_adaptive(settings, **kwargs):
 
 
 def get_methods_advanced(settings, **kwargs):
-    """Build method dicts for Variable Share, AdaHedge, and Scale-Free Hedge.
+    """Build method dicts for Variable Share, AdaHedge, and Scale-Free Hedge variants.
 
     Each entry sets a ``method_type`` key so the unified dispatcher
     :func:`get_weighted_forecasts_advanced` routes the call to the correct
     standalone function in simulate.py.
+
+    Active variants
+    ---------------
+    HBML-SFH      : Scale-Free Hedge (no forgetting, no hyperparameter)
+    HBML-SFHDF    : SFH with Decay Forgetting (decays only L_max)
+    HBML-SFH-SD   : SFH with Symmetric Decay (decays both cum_loss and L_max)
+    HBML-SFH-Meta : Two-layer meta-hedge over a grid of gamma values
     """
     eta_init      = kwargs.get("eta",           10.0)
     norm_type     = kwargs.get("norm_type",     "ratio")
     forecast_type = kwargs.get("forecast_type", "mean")
+    sfhdf_gamma   = kwargs.get("gamma",         0.2)    # from gamma_search or default
+    sfh_sd_gamma  = kwargs.get("sd_gamma",      sfhdf_gamma)  # may differ from sfhdf_gamma
 
     base = dict(
         start=settings["start"],
         end=settings["end"],
-        # Fix: forward the true experiment horizon so SFH/SFHDF aggregators
+        # Fix: forward the true experiment horizon so aggregators
         # do not default to horizon=1 for multi-step experiments.
         horizon=settings["horizon"],
         save_weights=True,
@@ -335,7 +344,17 @@ def get_methods_advanced(settings, **kwargs):
         "HBML-SFHDF": dict(
             **base,
             method_type="scale_free_hedge_df",
-            gamma=kwargs.get("gamma", 0.2),
+            gamma=sfhdf_gamma,
+        ),
+        "HBML-SFH-SD": dict(
+            **base,
+            method_type="scale_free_hedge_sd",
+            gamma=sfh_sd_gamma,
+        ),
+        "HBML-SFH-Meta": dict(
+            **base,
+            method_type="scale_free_hedge_meta",
+            # gamma_grid defaults to SFH_META_GAMMA_GRID inside simulate.py
         ),
     }
 
@@ -345,13 +364,15 @@ SFHDF_GAMMA_CANDIDATES = [0.0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.
 
 def find_best_sfhdf_gamma(forecast_dir, data_dir, settings_dir, target_col,
                           eta_str, omit_ids, omit_models, common_ids):
-    """Grid-search SFHDF gamma over SFHDF_GAMMA_CANDIDATES.
+    """Grid-search gamma for SFHDF and SFH-SD over SFHDF_GAMMA_CANDIDATES.
 
-    For each gamma, runs scale_free_hedge_df_forecast in-memory across all
-    patients and computes mean RMSE.  Returns the first gamma for which mean
-    SFHDF RMSE is strictly less than the mean RMSE of *every* expert model.
-    Falls back to the gamma with the overall lowest SFHDF RMSE if none clears
-    the bar.
+    For each gamma value, evaluates both scale_free_hedge_df_forecast (SFHDF)
+    and scale_free_hedge_sd_forecast (SFH-SD) in-memory across all patients
+    using the correct (ŷ - y)² RMSE estimand.
+
+    Selection criterion: first gamma for which the method's mean RMSE is
+    strictly less than the mean RMSE of every expert model.  Falls back to
+    the gamma with the overall lowest RMSE for each method independently.
 
     Parameters
     ----------
@@ -364,13 +385,14 @@ def find_best_sfhdf_gamma(forecast_dir, data_dir, settings_dir, target_col,
 
     Returns
     -------
-    float
-        The chosen gamma value.
+    tuple of (float, float)
+        ``(sfhdf_gamma, sfh_sd_gamma)`` — the chosen gamma for SFHDF and
+        SFH-SD respectively.  The two values may differ.
     """
     import glob as _glob
 
     # ---- collect patient data (mirrors main loop file loading, no I/O side-effects) ----
-    patient_data = []   # list of (forecasts_dict, losses_dict, settings_dict)
+    patient_data = []   # list of (id_num, forecasts_dict, losses_dict, settings_dict, targets)
     for file in _glob.glob(os.path.join(forecast_dir, "*_forecasts.csv")):
         id_num = os.path.basename(file)[:3]
         if id_num in omit_ids or id_num not in common_ids:
@@ -403,55 +425,88 @@ def find_best_sfhdf_gamma(forecast_dir, data_dir, settings_dir, target_col,
             forecasts = {k: v[:_min] for k, v in forecasts.items()}
 
         losses = sim.get_online_losses(forecasts, targets, **settings)
-        patient_data.append((id_num, forecasts, losses, settings))
+        patient_data.append((id_num, forecasts, losses, settings, targets))
 
     if not patient_data:
-        print("[gamma_search] No patient data found; defaulting to gamma=0.2")
-        return 0.2
+        print("[gamma_search] No patient data found; defaulting to gamma=0.2 for both methods")
+        return 0.2, 0.2
 
     # ---- expert mean RMSE across patients ----
     expert_rmse_sum = {}   # model -> sum of per-patient RMSE
     n_patients = len(patient_data)
-    for _, forecasts, losses, _ in patient_data:
+    for _, forecasts, losses, _, _ in patient_data:
         for model, loss_arr in losses.items():
-            if model in (set(forecasts.keys()) | {"HBML", "HBML-SFH", "HBML-SFHDF"}):
+            if model in (set(forecasts.keys()) | {"HBML", "HBML-SFH", "HBML-SFHDF", "HBML-SFH-SD"}):
                 valid = loss_arr[100:-10]
                 rmse = np.sqrt(np.nanmean(valid)) if len(valid) > 0 and not np.isnan(valid).all() else np.nan
                 expert_rmse_sum.setdefault(model, 0.0)
                 expert_rmse_sum[model] += rmse
     expert_mean = {m: expert_rmse_sum[m] / n_patients for m in expert_rmse_sum if not np.isnan(expert_rmse_sum[m] / n_patients)}
     if not expert_mean:
-        print("[gamma_search] Could not compute expert RMSE; defaulting to gamma=0.2")
-        return 0.2
+        print("[gamma_search] Could not compute expert RMSE; defaulting to gamma=0.2 for both")
+        return 0.2, 0.2
     min_expert_mean_rmse = min(expert_mean.values())
 
-    # ---- grid search ----
-    sfhdf_mean_per_gamma = {}
+    # ---- joint grid search over gamma for both SFHDF and SFH-SD ----
+    sfhdf_rmse_per_gamma  = {}
+    sfh_sd_rmse_per_gamma = {}
+    sfhdf_best  = None   # first gamma where SFHDF beats all experts
+    sfh_sd_best = None   # first gamma where SFH-SD beats all experts
+
     for gamma in SFHDF_GAMMA_CANDIDATES:
-        rmse_sum = 0.0
-        for _, forecasts, losses, settings in patient_data:
-            exp_f, exp_l = sim.scale_free_hedge_df_forecast(
+        sfhdf_sum  = 0.0
+        sfh_sd_sum = 0.0
+        for _, forecasts, losses, settings, targets in patient_data:
+            # SFHDF
+            _, exp_l_df = sim.scale_free_hedge_df_forecast(
                 forecasts, losses, gamma=gamma,
                 save_weights=False, forecast_type="mean",
-                # horizon is already inside settings (loaded from JSON) so
-                # **settings handles it; no extra kwarg needed here.
-                **settings
+                targets=targets, **settings
             )
-            valid = exp_l[100:-10]
-            rmse_sum += np.sqrt(np.nanmean(valid)) if len(valid) > 0 and not np.isnan(valid).all() else 0.0
-        sfhdf_mean = rmse_sum / n_patients
-        sfhdf_mean_per_gamma[gamma] = sfhdf_mean
-        print(f"  [gamma_search] gamma={gamma:.2f}  SFHDF mean RMSE={sfhdf_mean:.4f}  "
-              f"(min expert mean={min_expert_mean_rmse:.4f})")
-        if sfhdf_mean < min_expert_mean_rmse:
-            print(f"  [gamma_search] Selected gamma={gamma:.2f} (SFHDF beats all experts)")
-            return gamma
+            valid_df = exp_l_df[100:-10]
+            sfhdf_sum += np.sqrt(np.nanmean(valid_df)) if len(valid_df) > 0 and not np.isnan(valid_df).all() else 0.0
 
-    # No gamma cleared the bar — use the one with the lowest SFHDF RMSE
-    best_fallback = min(sfhdf_mean_per_gamma, key=sfhdf_mean_per_gamma.get)
-    print(f"  [gamma_search] No gamma beat all experts. "
-          f"Falling back to gamma={best_fallback:.2f} (lowest SFHDF RMSE={sfhdf_mean_per_gamma[best_fallback]:.4f})")
-    return best_fallback
+            # SFH-SD
+            _, exp_l_sd = sim.scale_free_hedge_sd_forecast(
+                forecasts, losses, gamma=gamma,
+                save_weights=False, forecast_type="mean",
+                targets=targets, **settings
+            )
+            valid_sd = exp_l_sd[100:-10]
+            sfh_sd_sum += np.sqrt(np.nanmean(valid_sd)) if len(valid_sd) > 0 and not np.isnan(valid_sd).all() else 0.0
+
+        sfhdf_mean  = sfhdf_sum  / n_patients
+        sfh_sd_mean = sfh_sd_sum / n_patients
+        sfhdf_rmse_per_gamma[gamma]  = sfhdf_mean
+        sfh_sd_rmse_per_gamma[gamma] = sfh_sd_mean
+
+        print(f"  [gamma_search] gamma={gamma:.2f}  "
+              f"SFHDF={sfhdf_mean:.4f}  SFH-SD={sfh_sd_mean:.4f}  "
+              f"(min expert={min_expert_mean_rmse:.4f})")
+
+        if sfhdf_best is None and sfhdf_mean < min_expert_mean_rmse:
+            sfhdf_best = gamma
+            print(f"  [gamma_search] SFHDF  selected gamma={gamma:.2f}")
+
+        if sfh_sd_best is None and sfh_sd_mean < min_expert_mean_rmse:
+            sfh_sd_best = gamma
+            print(f"  [gamma_search] SFH-SD selected gamma={gamma:.2f}")
+
+        # Early-exit once both methods have found a gamma
+        if sfhdf_best is not None and sfh_sd_best is not None:
+            break
+
+    # Fallback: lowest RMSE gamma if no gamma cleared the expert bar
+    if sfhdf_best is None:
+        sfhdf_best = min(sfhdf_rmse_per_gamma, key=sfhdf_rmse_per_gamma.get)
+        print(f"  [gamma_search] SFHDF  fallback gamma={sfhdf_best:.2f} "
+              f"(RMSE={sfhdf_rmse_per_gamma[sfhdf_best]:.4f})")
+    if sfh_sd_best is None:
+        sfh_sd_best = min(sfh_sd_rmse_per_gamma, key=sfh_sd_rmse_per_gamma.get)
+        print(f"  [gamma_search] SFH-SD fallback gamma={sfh_sd_best:.2f} "
+              f"(RMSE={sfh_sd_rmse_per_gamma[sfh_sd_best]:.4f})")
+
+    return sfhdf_best, sfh_sd_best
 
 
 def main():
@@ -534,11 +589,12 @@ def main():
         # No cross-context data found; fall back to allowing all IDs in this run
         common_ids = {os.path.basename(f)[:3] for f in glob(os.path.join(forecast_dir, "*_forecasts.csv"))}
 
-    # ---- Gamma search for SFHDF (optional pre-pass, runs after common_ids is known) ----
-    sfhdf_gamma = 0.2  # default
+    # ---- Gamma search for SFHDF and SFH-SD (optional pre-pass, runs after common_ids is known) ----
+    sfhdf_gamma  = 0.2  # default
+    sfh_sd_gamma = 0.2  # default
     if args.advanced_methods and args.gamma_search:
-        print("Running SFHDF gamma grid search...")
-        sfhdf_gamma = find_best_sfhdf_gamma(
+        print("Running gamma grid search for SFHDF and SFH-SD...")
+        sfhdf_gamma, sfh_sd_gamma = find_best_sfhdf_gamma(
             forecast_dir=forecast_dir,
             data_dir=data_dir,
             settings_dir=settings_dir,
@@ -548,7 +604,7 @@ def main():
             omit_models=set(args.omit_models),
             common_ids=common_ids,
         )
-        print(f"Using SFHDF gamma={sfhdf_gamma:.2f} for main processing loop.")
+        print(f"Using SFHDF gamma={sfhdf_gamma:.2f}, SFH-SD gamma={sfh_sd_gamma:.2f} for main loop.")
 
         
     for file in glob(os.path.join(forecast_dir,"*_forecasts.csv")):
@@ -674,7 +730,8 @@ def main():
             # --- Advanced algorithms branch (Variable Share, AdaHedge, Scale-Free Hedge) ---
             if args.advanced_methods:
                 adv_methods = get_methods_advanced(
-                    settings, eta=args.eta, norm_type=args.norm_type, gamma=sfhdf_gamma
+                    settings, eta=args.eta, norm_type=args.norm_type,
+                    gamma=sfhdf_gamma, sd_gamma=sfh_sd_gamma
                 )
                 # Pass targets so aggregators record (ŷ - y)² instead of weighted expert losses.
                 adv_exp_forecasts, adv_exp_losses, adv_exp_weights = get_weighted_forecasts_advanced(

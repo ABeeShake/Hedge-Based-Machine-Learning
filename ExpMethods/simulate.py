@@ -1179,15 +1179,170 @@ def scale_free_hedge_df_forecast(forecasts, losses, **kwargs):
     return exp_forecasts, exp_losses
 
 
+def scale_free_hedge_sd_forecast(forecasts, losses, **kwargs):
+    """Scale-Free Hedge with Symmetric Decay (SFH-SD).
+
+    Unlike :func:`scale_free_hedge_df_forecast` (SFHDF), which decays only
+    ``L_max`` while letting ``cum_loss`` grow unboundedly, SFH-SD decays
+    **both** accumulators at the same rate::
+
+        cum_loss_t[k]  =  (1 - gamma) * cum_loss_{t-1}[k]  +  l_{t,k}
+        L_max_t        =  (1 - gamma) * L_max_{t-1}  +  gamma * max_k l_{t,k}
+        W_{t+1,k}      ∝  exp( -cum_loss_t[k] / L_max_t )
+
+    Because both numerator and denominator decay at the same rate, the
+    log-weight ratio ``cum_loss / L_max`` is bounded in steady state
+    (≈ 1/gamma with constant losses), preventing the permanent weight
+    concentration that makes SFHDF rigid at long horizons.
+
+    When gamma → 0 this reduces to vanilla Scale-Free Hedge (SFH).
+    When gamma = 1 the algorithm is fully forgetful (single-step ratio).
+
+    Kwargs
+    ------
+    gamma : float
+        Forgetting rate in [0, 1).  Default 0.2.
+    start, end, forecast_type, save_weights, targets : standard kwargs.
+    """
+    start         = kwargs.get("start",         None)
+    end           = kwargs.get("end",           None)
+    gamma         = float(kwargs.get("gamma",   0.2))
+    save_weights  = kwargs.get("save_weights",  False)
+    forecast_type = kwargs.get("forecast_type", "sample")
+    targets_arr   = kwargs.get("targets",       None)
+    if targets_arr is not None:
+        targets_arr = utils.to_np(targets_arr).ravel()
+
+    if start is None or not end:
+        raise ValueError("Must have start and end times")
+
+    f_mat = utils.make_matrix(forecasts)
+    l_mat = utils.make_matrix(losses)
+    T, m  = l_mat.shape
+
+    cum_loss  = np.zeros(m)   # decaying per-expert loss accumulator
+    L_max     = 1e-8          # decaying running max normalizer
+    Wt        = np.ones(m) / m
+    W         = np.ones((T + 1, m)) / m
+    if save_weights:
+        WT = np.ones((T + 1, m)) / m
+
+    exp_forecasts = np.zeros(T)
+    exp_losses    = np.zeros(T)
+    jt = 0
+
+    for g in range(start, T):
+        l = l_mat[g]
+
+        if not (l == 0).all():
+            l_safe = np.nan_to_num(l, nan=np.nanmax(l) if not np.isnan(l).all() else 0.0)
+            # Symmetric decay: forget old losses in both accumulators equally.
+            cum_loss  = (1.0 - gamma) * cum_loss + l_safe
+            L_max     = (1.0 - gamma) * L_max    + gamma * float(l_safe.max())
+
+            log_w    = -cum_loss / max(L_max, 1e-8)
+            log_w[np.isnan(l)] = -np.inf
+            log_w   -= np.nanmax(log_w) if not np.isnan(log_w).all() else 0.0
+            Wt       = np.exp(log_w)
+            denom    = Wt.sum()
+            Wt       = Wt / denom if denom > 1e-12 else np.ones(m) / m
+            W[g + 1] = Wt.copy()
+        else:
+            W[g + 1] = Wt.copy()
+
+        if save_weights:
+            WT[g + 1] = Wt.copy()
+
+        t_target = g + kwargs.get("horizon", 1)
+        if t_target < T:
+            Wt_norm = Wt / Wt.sum()
+            if forecast_type == "mean":
+                exp_forecasts[t_target] = np.nansum(Wt_norm * f_mat[t_target])
+                if targets_arr is not None and t_target < len(targets_arr):
+                    exp_losses[t_target] = (exp_forecasts[t_target] - targets_arr[t_target]) ** 2
+                else:
+                    exp_losses[t_target] = np.nansum(Wt_norm * l_mat[t_target])
+            else:
+                jt = np.random.choice(m, p=Wt_norm)
+                exp_forecasts[t_target] = f_mat[t_target][jt]
+                exp_losses[t_target]    = l_mat[t_target][jt]
+
+    if save_weights:
+        return exp_forecasts, exp_losses, WT
+    return exp_forecasts, exp_losses
+
+
+# Gamma grid used by the two-layer meta-hedge.
+# Includes gamma=0.0 (= vanilla SFH) through fully-forgetful gamma=1.0.
+SFH_META_GAMMA_GRID = [0.0, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0]
+
+
+def scale_free_hedge_meta_forecast(forecasts, losses, **kwargs):
+    """Two-layer Scale-Free Hedge meta-learner (SFH-Meta).
+
+    **Layer 1** runs :func:`scale_free_hedge_df_forecast` for each gamma
+    in ``gamma_grid`` (``gamma=0.0`` is equivalent to vanilla SFH) and
+    collects the per-gamma T-length forecast arrays and their realized
+    squared-error losses against the ground truth.
+
+    **Layer 2** applies a second :func:`scale_free_hedge_forecast` layer
+    over the layer-1 meta-expert outputs.  The outer SFH accumulates
+    evidence about which gamma is working well and concentrates weight
+    on it, adapting automatically as the optimal gamma shifts across
+    glycemic regimes.
+
+    Because both layers are causally valid (no look-ahead beyond
+    ``horizon`` steps), the combined procedure is a fully online
+    algorithm with no hyperparameters to tune.
+
+    Kwargs
+    ------
+    gamma_grid : list of float, optional
+        Forgetting rates for the layer-1 meta-experts.
+        Default: ``SFH_META_GAMMA_GRID = [0.0, 0.05, 0.1, 0.2, 0.3,
+        0.5, 0.7, 1.0]``.
+    start, end, horizon, forecast_type, save_weights, targets :
+        Standard kwargs forwarded to both layers.
+    """
+    gamma_grid   = kwargs.get("gamma_grid", SFH_META_GAMMA_GRID)
+    save_weights = kwargs.get("save_weights", False)
+
+    # Strip save_weights from inner-layer calls; we handle it in layer 2.
+    inner_kwargs = {k: v for k, v in kwargs.items() if k != "save_weights"}
+
+    # --- Layer 1: independent SFHDF runs for each gamma ------------------
+    meta_forecasts: dict = {}
+    meta_losses:    dict = {}
+    for gamma in gamma_grid:
+        label = f"g{gamma:.3f}"
+        exp_f, exp_l = scale_free_hedge_df_forecast(
+            forecasts, losses, gamma=gamma, save_weights=False, **inner_kwargs
+        )
+        meta_forecasts[label] = exp_f
+        meta_losses[label]    = exp_l
+
+    # --- Layer 2: SFH over the meta-experts ------------------------------
+    # The meta-expert losses are already (ŷ - y)² (from the RMSE fix), so
+    # layer 2 sees the correct per-gamma squared errors for weight updates.
+    results = scale_free_hedge_forecast(
+        meta_forecasts, meta_losses,
+        save_weights=save_weights,
+        **inner_kwargs
+    )
+    return results
+
+
 # Registry mapping method names to their forecast functions.
 # Used by get_weighted_forecasts_advanced to dispatch calls.
 _ADVANCED_FORECAST_FUNCS = {
-    "variable_share":        variable_share_forecast,
-    "adahedge":              adahedge_forecast,
-    "scale_free_hedge":      scale_free_hedge_forecast,
-    "scale_free_hedge_df":   scale_free_hedge_df_forecast,
+    "variable_share":          variable_share_forecast,
+    "adahedge":                adahedge_forecast,
+    "scale_free_hedge":        scale_free_hedge_forecast,
+    "scale_free_hedge_df":     scale_free_hedge_df_forecast,
+    "scale_free_hedge_sd":     scale_free_hedge_sd_forecast,
+    "scale_free_hedge_meta":   scale_free_hedge_meta_forecast,
     # existing adaptive-eta variants are dispatched via the same interface
-    "adaptive_eta":          weighted_forecast_adaptive_eta,
+    "adaptive_eta":            weighted_forecast_adaptive_eta,
 }
 
 
