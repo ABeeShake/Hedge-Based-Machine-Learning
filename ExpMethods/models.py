@@ -133,7 +133,6 @@ class NODE(nn.Module):
             nn.Tanh(),
             DepthCat(1),
             nn.Linear(hidden_dim + 1, 1),
-            nn.Softplus()
         )
         self.model = NeuralODE(f,**kwargs)
         self.horizon = horizon

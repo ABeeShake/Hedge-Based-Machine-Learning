@@ -64,20 +64,64 @@ def generate_macros():
                     macro_name = f"RMSEMean{dataset}{horizon}{model}{context_name}"
                     macros.append(f"\\newcommand{{\\{macro_name}}}{{{val}}}")
                     
-        # calculate reduction
+        # Calculate reductions for key configurations
         try:
-            node_row = weinstock_30[weinstock_30["model"] == "NODE"]
-            hbml_row = weinstock_30[weinstock_30["model"] == "HBML"]
-            if not node_row.empty and not hbml_row.empty:
-                node_val_str = str(node_row["mean.full"].values[0]).replace("*", "").replace("\\textbf{", "").replace("}", "")
-                hbml_val_str = str(hbml_row["mean.full"].values[0]).replace("*", "").replace("\\textbf{", "").replace("}", "")
-                node_val = float(node_val_str)
-                hbml_val = float(hbml_val_str)
-                reduction = (node_val - hbml_val) / node_val * 100
-                macros.append(f"\\newcommand{{\\RMSEMeanWeinstockThirtyMinReduction}}{{{reduction:.1f}}}")
+            for ds_key, ds_name in [("weinstock", "Weinstock"), ("cgmacros", "Cgmacros")]:
+                ds_sub = rmse_df[rmse_df["dataset"].str.contains(ds_key, case=False, na=False)]
+                for h_val, h_name in [(0.5, "ThirtyMin"), (2.0, "TwoHour"), (5.0, "FiveHour")]:
+                    h_sub = ds_sub[ds_sub["horizon"].astype(str).isin([str(h_val), str(int(h_val)) if float(h_val).is_integer() else str(h_val)])]
+                    hbml_sub = h_sub[h_sub["model"] == "HBML"]
+                    experts_sub = h_sub[h_sub["model"] != "HBML"]
+                    if not hbml_sub.empty and not experts_sub.empty:
+                        for ctx_suffix, ctx_name in [('6', 'SixHr'), ('12', 'TwelveHr'), ('24', 'TwentyFourHr'), ('full', 'Full')]:
+                            col_name = f"mean.{ctx_suffix}"
+                            if col_name in hbml_sub and col_name in experts_sub:
+                                hbml_val = float(str(hbml_sub[col_name].values[0]).replace("*", "").replace("\\textbf{", "").replace("}", ""))
+                                exp_vals = [float(str(v).replace("*", "").replace("\\textbf{", "").replace("}", "")) for v in experts_sub[col_name].values if pd.notna(v)]
+                                if exp_vals:
+                                    best_exp_val = min(exp_vals)
+                                    reduction = (best_exp_val - hbml_val) / best_exp_val * 100.0
+                                    macros.append(f"\\newcommand{{\\RMSEReduction{ds_name}{h_name}{ctx_name}}}{{{reduction:.1f}}}")
+                                    if ds_name == "Weinstock" and h_name == "ThirtyMin" and ctx_name == "Full":
+                                        macros.append(f"\\newcommand{{\\RMSEMeanWeinstockThirtyMinReduction}}{{{reduction:.1f}}}")
         except Exception as e:
-            print("Could not compute RMSE reduction:", e)
-            
+            print("Could not compute RMSE reductions:", e)
+
+        # 1b. Process statistical_tests_all_experts.csv for SD macros
+        stats_path = os.path.join(tables_dir, "statistical_tests_all_experts.csv")
+        if os.path.exists(stats_path):
+            try:
+                stats_df = pd.read_csv(stats_path)
+                for _, row in stats_df.iterrows():
+                    ds_str = str(row['dataset']).capitalize()
+                    h_val = str(row['horizon'])
+                    if h_val in ['0.5', 'ThirtyMin']:
+                        h_name = "ThirtyMin"
+                    elif h_val in ['2.0', '2', 'TwoHour']:
+                        h_name = "TwoHour"
+                    elif h_val in ['5.0', '5', 'FiveHour']:
+                        h_name = "FiveHour"
+                    else:
+                        h_name = h_val.replace(".", "")
+                        
+                    c_val = str(row['context']).lower()
+                    if c_val == '6':
+                        ctx_name = "SixHr"
+                    elif c_val == '12':
+                        ctx_name = "TwelveHr"
+                    elif c_val == '24':
+                        ctx_name = "TwentyFourHr"
+                    elif c_val == 'full':
+                        ctx_name = "Full"
+                    else:
+                        ctx_name = c_val.capitalize()
+                        
+                    exp_name = str(row['expert']).replace(" ", "").replace("(", "").replace(")", "").replace(".", "").replace("-", "")
+                    macros.append(f"\\newcommand{{\\RMSEsd{ds_str}{h_name}HBML{ctx_name}}}{{{row['hbml_sd']:.2f}}}")
+                    macros.append(f"\\newcommand{{\\RMSEsd{ds_str}{h_name}{exp_name}{ctx_name}}}{{{row['expert_sd']:.2f}}}")
+            except Exception as e:
+                print("Could not compute RMSE SD macros:", e)
+
     # 2. Process max_ceg.csv for CEG metrics
     ceg_path = os.path.join(tables_dir, "max_ceg.csv")
     if os.path.exists(ceg_path):

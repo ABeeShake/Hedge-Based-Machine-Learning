@@ -270,45 +270,39 @@ def analyze_patient(
     
     ceg_wide = pd.concat([ceg_wide, overall_ceg_wide], ignore_index=True)
 
-    # ---- 3. Best-expert frequency per regime ----
-    # Give HBML priority in tie-breakers so it gets credit when it copies the best expert
-    long["is_hbml"] = (long["model"] == hbml).astype(int)
+    # ---- 3. Best-expert frequency per regime (Fair tie-breaking) ----
+    # Find minimum SE for each (t, regime) and split credit equally among all tied models
+    min_se = long.groupby(["t", "regime"])["se"].transform("min")
+    tied_best = long[np.isclose(long["se"], min_se, atol=1e-5)].copy()
+    tied_counts = tied_best.groupby(["t", "regime"])["model"].transform("count")
+    tied_best["weight"] = 1.0 / tied_counts
 
-    # For each (t, regime), which model has the lowest SE? (RMSE proxy)
-    best_rmse_model = (
-        long.sort_values(["t", "se", "is_hbml"], ascending=[True, True, False])
-        .groupby(["t", "regime"])
-        .first()
-        .reset_index()[["t", "regime", "model"]]
-    )
-    best_rmse_model.columns = ["t", "regime", "best_rmse_model"]
     best_rmse_freq = (
-        best_rmse_model.groupby(["regime", "best_rmse_model"])
-        .size()
+        tied_best.groupby(["regime", "model"])["weight"]
+        .sum()
         .reset_index(name="count")
     )
-    best_rmse_total = best_rmse_model.groupby("regime").size().reset_index(name="total")
-    best_rmse_freq  = best_rmse_freq.merge(best_rmse_total, on="regime")
+    best_rmse_total = tied_best.groupby("regime")["weight"].sum().reset_index(name="total")
+    best_rmse_freq = best_rmse_freq.merge(best_rmse_total, on="regime")
     best_rmse_freq["freq"] = best_rmse_freq["count"] / best_rmse_freq["total"]
 
-    # For A+B%: each step, which model has the best CEG zone? Break ties with squared error.
+    # For A+B%: find minimum zone rank, break ties with minimum SE, split credit equally
     zone_ranks = {"A": 1, "B": 2, "C": 3, "D1": 4, "D2": 4, "E1": 5, "E2": 5}
     long["zone_rank"] = long["zone"].map(zone_ranks)
-    
-    best_ab_model = (
-        long.sort_values(["t", "zone_rank", "se", "is_hbml"], ascending=[True, True, True, False])
-        .groupby(["t", "regime"])
-        .first()
-        .reset_index()[["t", "regime", "model"]]
-    )
-    best_ab_model.columns = ["t", "regime", "best_ab_model"]
+    min_rank = long.groupby(["t", "regime"])["zone_rank"].transform("min")
+    cand = long[long["zone_rank"] == min_rank]
+    min_se_cand = cand.groupby(["t", "regime"])["se"].transform("min")
+    tied_ab = cand[np.isclose(cand["se"], min_se_cand, atol=1e-5)].copy()
+    tied_ab_counts = tied_ab.groupby(["t", "regime"])["model"].transform("count")
+    tied_ab["weight"] = 1.0 / tied_ab_counts
+
     best_ab_freq = (
-        best_ab_model.groupby(["regime", "best_ab_model"])
-        .size()
+        tied_ab.groupby(["regime", "model"])["weight"]
+        .sum()
         .reset_index(name="count")
     )
-    best_ab_total = best_ab_model.groupby("regime").size().reset_index(name="total")
-    best_ab_freq  = best_ab_freq.merge(best_ab_total, on="regime")
+    best_ab_total = tied_ab.groupby("regime")["weight"].sum().reset_index(name="total")
+    best_ab_freq = best_ab_freq.merge(best_ab_total, on="regime")
     best_ab_freq["freq"] = best_ab_freq["count"] / best_ab_freq["total"]
 
     return dict(

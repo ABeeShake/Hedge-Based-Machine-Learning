@@ -1,0 +1,191 @@
+Recommendation: Rejection in its current form, with reconsideration after substantial methodological correction and reanalysis.
+
+The clinical question is relevant, but the manuscript currently does not establish that the proposed algorithm is implemented as described, that its theoretical guarantees hold, or that its reported forecasting performance supports the clinical claims.
+
+The authors propose HBML, an online method for selecting among five personalized glucose-forecasting models. Using individual CGM histories without population pretraining is a useful practical objective, and evaluation across two contrasting cohorts is a strength. However, the principal contribution - reliable adaptation among experts - is not convincingly demonstrated. Several concerns below affect the validity of the central findings rather than their presentation.
+
+1  The manuscript reports conflicting versions of its principal results
+
+The abstract, Results text, and tables do not agree. For the primary full-history analysis:
+
+Five-hour forecast
+
+HBML RMSE in Results text
+
+HBML RMSE in table
+
+Best individual expert
+
+Weinstock 2016
+
+54.46
+
+49.68Table 1
+
+58.64
+
+CGMacros
+
+32.64
+
+36.42Table 3
+
+42.44
+
+All values are in mg/dL.
+
+If the tables are correct, the corresponding improvements are approximately 15.3% and 14.2%, rather than the 7.1% and 23.1% highlighted in the abstract. Discrepancies also occur at shorter horizons: the full-history two-hour HBML RMSE is 23.00 in the text versus 23.22 in Table 1, and 19.01 versus 19.40 for CGMacros.
+
+Some discrepancies change the conclusions. The Results state that HBML outperforms every expert in all nine full-history subgroup-by-horizon comparisons. However, Table 7 reports a two-hour RMSE of 21.96 for HBML versus 21.74 for NODE in participants with type 2 diabetes.
+
+The authors must identify the definitive experiment version and regenerate every table, figure, percentage, and textual statement from the same underlying outputs. These differences cannot be treated as rounding errors.
+
+2  Algorithm 1 does not implement the claimed Fixed Share recursion as written
+
+Algorithm 1 constructs the shared distribution
+
+but subsequently updates losses using
+
+Consequently, the redistributed probability mass affects the current sampling decision but is not carried into the persistent weight update. The persistent distribution continues accumulating historical penalties without the claimed recovery mechanism.
+
+With the manuscript's ordering of operations, the loss update should ordinarily start from the shared distribution pₜ, or an equivalent correctly indexed recursion. The cumulative-loss formulation on page 21 presents the same concern.
+
+This is central to the paper: the proposed advantage depends on experts recovering after their relative performance changes. The authors must reconcile the equations, pseudocode, and actual implementation. If the implementation follows Algorithm 1, the experiments require rerunning after correction.
+
+3  The theoretical guarantees are invalid under the stated loss and prediction rule
+
+Theorem 1 states a regret expression depending only on K, S, and T, although the algorithm samples individual experts and uses unbounded squared errors. Equation 8 introduces a different bound without supplying a proof for the proposed algorithm.
+
+A simple counterexample illustrates the problem. At the first round, let the five expert losses be
+
+Uniform sampling gives expected regret 80. With T = 1 and S = 0, Equation 4 gives ln 5 ≈ 1.61, while Equation 8 gives √(100 ln 5) ≈ 12.69. Thus, neither expression holds as written, even in expectation.
+
+The authors must distinguish guarantees for randomized expert selection from those for aggregated predictions and mixable losses. The cited adaptive-regret literature explicitly requires conditions when transferring guarantees between loss formulations.
+
+Source: Adamskiy et al. A Closer Look at Adaptive Regret
+
+Additional problems remain:
+
+The theorem uses αₜ = 1/t, whereas the experiments reportedly use 1/t².
+
+The best expert at each individual round can switch O(T) times; sublinear regret against that comparator is not established.
+
+Replacing cumulative loss with a discounted accumulator does not automatically yield a bound on undiscounted cumulative regret.
+
+Updating an expert's parameters does not, by itself, invalidate an expert-advice guarantee against its sequentially issued predictions. The discussion of parameter convergence needs a clearly defined alternative comparator and a derivation connecting parameter error to cumulative prediction loss.
+
+The theoretical section requires reconstruction, including assumptions, proofs, and treatment of delayed feedback.
+
+4  The proposed learning rate schedule is not scale free in the stated sense
+
+For
+
+multiplying every loss by a > 0 multiplies the accumulator by a, so the exponent in the weight update changes by a factor of √a. The resulting expert probabilities therefore change under a simple rescaling of the losses.
+
+This contradicts the usual scale-invariance property of scale-free online learning.
+
+Source: Orabona and Pál. Scale-Free Online Learning
+
+The practical implication is that expressing otherwise identical glucose measurements in different units can change the algorithm's behavior unless additional normalization is applied. The manuscript must describe such normalization or revise the method and terminology. It must also report the actual values of β and ε, their selection procedures, and sensitivity analyses. The repeated unresolved citations to "Scale-Free Hedge" further prevent verification.
+
+5  The evaluation does not establish that forecasts use only available information
+
+The introduction mentions delayed losses, but Algorithm 1 observes a prediction's outcome within the same iteration without explicitly representing forecast origin, target time, or pending forecasts.
+
+This distinction is essential. On a five-minute sampling grid, a five-hour forecast cannot contribute its realized loss to model selection until 60 subsequent sampling intervals have passed. Updating its weights earlier would introduce future information.
+
+The manuscript needs an explicit chronological evaluation protocol specifying forecast stride, initial training period, refitting times, available training labels, delayed weight updates, and whether errors concern the horizon endpoint or an entire predicted trajectory. It must also document normalization, interpolation, missing-data handling, and the meaning of "full history" at each forecast origin.
+
+The current description does not prove that leakage occurred; it fails to rule it out. A reproducible audit of timestamps and data availability is necessary before the performance estimates can be trusted.
+
+6  The NODE architecture as described cannot represent falling glucose trajectories
+
+The NODE section places a Softplus activation on the final scalar output of the network defining the glucose derivative. If this description is literal,
+
+so its predicted glucose trajectory is monotonically increasing.
+
+That would prevent the model from representing falling glucose and hypoglycemic transitions. This concern is particularly consequential because NODE is the strongest individual expert in most short-horizon comparisons and appears to account for much of HBML's performance.
+
+The authors should provide the exact state equation and computational architecture. If Softplus instead constrains a decoded concentration, or another component permits a signed derivative, this must be explained. Predictions during falling-glucose periods should be shown alongside persistence and a signed-output NODE.
+
+7  The comparisons do not isolate the value of adaptive expert tracking
+
+Comparing HBML only with its constituent models does not establish that the proposed selection mechanism provides the benefit. Essential comparators include persistence, simple averaging, performance-weighted averaging, a prospectively selected single expert, and a simple recent-loss switching rule. Ablations should isolate sharing, the adaptive learning rate, damping, and the choice of sharing schedule.
+
+A particularly important omission is the deterministic weighted mean. For the same probabilities and expert forecasts,
+
+Thus, weighted averaging has squared error no greater than the expected squared error of randomly selecting an expert. Since the framework already requires all experts' predictions to update their losses, the operational benefit of sampling is unclear.
+
+The authors should also distinguish learning which expert generally works best for an individual from tracking genuine changes within that individual. Figure 5's prolonged concentration on NODE does not itself demonstrate effective adaptation to changing regimes.
+
+8  The statistical analysis is missing and evaluation set tuning is a concern
+
+The "Statistics and reproducibility" section remains a placeholder. Reporting mean participant RMSE with its standard deviation does not quantify uncertainty in the paired difference between methods.
+
+The authors should report participant-level paired improvements with confidence intervals, the proportion of participants benefiting or worsening, and sensitivity to stochastic model training and expert sampling. Resampling should preserve each participant's longitudinal dependence rather than treating overlapping forecasts as independent observations.
+
+The statement that HBML wins 23 of 24 configurations is descriptive; those configurations are correlated and do not constitute 24 independent confirmations. Similarly, "matched" performance is not established by numerical proximity alone.
+
+The manuscript states that 1/t² was selected because it performed as well as or better than 1/t across the evaluated settings. This is a data-driven method choice. The authors must identify development and evaluation data and show that the final pipeline was assessed independently of such choices. The explanation attributing one unfavorable result to initialization also requires an ablation rather than speculation.
+
+9  The clinical safety and early warning claims exceed the evidence
+
+The Discussion claims high sensitivity and specificity, a safety-net property, and suitability for interventions including insulin administration. These claims are not supported by the reported analyses.
+
+Clarke Error Grid proportions provide a descriptive assessment of prediction errors. They do not establish event-detection sensitivity, specificity, positive predictive value, false alarms per day, warning lead time, or clinical benefit. In particular, the fraction of all predictions in Zone C is not a conventional false-positive rate, and the combined D+E fraction is not a conventional false-negative rate: the denominators and event definitions differ.
+
+High overall A+B percentages can coexist with poor detection of uncommon but important hypoglycemic episodes. The reported 0.93% Zone E at five hours in Weinstock also warrants investigation of affected participants and episodes rather than reassurance from the combined A+B percentage.
+
+The authors should define the intended use - such as short-term hypoglycemia alerts or longer-term glucose trend information - and evaluate the corresponding event-level outcomes. A five-hour endpoint forecast can miss an intervening hypoglycemic event entirely. Forecast-informed treatment also changes future glucose, so retrospective accuracy cannot establish the safety of acting on those forecasts.
+
+Until those evaluations exist, claims of clinical reliability, a guaranteed safety net, and immediate deployment should be substantially narrowed.
+
+10  Figure 4 frequencies may be driven by tie handling
+
+Algorithm 1 returns exactly the prediction of one constituent expert. Therefore, at an individual forecast origin, HBML's squared error must equal that expert's error: HBML cannot uniquely outperform all five experts at that origin.
+
+Nevertheless, Figure 4 presents HBML as the most frequently best-performing method. The authors must explain whether comparisons are pointwise or calculated over windows, how ties are counted, and whether ordering or tie-breaking favors HBML. This is especially important for the A+B criterion, where many methods can receive the same binary classification.
+
+Regime-specific RMSE differences and event-detection performance, with sample sizes and uncertainty, would be more interpretable. The regime definitions should also specify whether they use only past measurements and how stable but out-of-range glucose is classified.
+
+11  Cohort selection and preprocessing are inadequately documented
+
+The original Weinstock study included 201 participants, whereas this manuscript analyzes 100. The manuscript must explain the selection process, exclusions, and representation of participants with and without prior severe hypoglycemia. These details directly affect the claimed relevance to hypoglycemia prevention.
+
+Source: Weinstock et al. Risk Factors Associated With Severe Hypoglycemia in Older Adults With Type 1 Diabetes
+
+CGMacros includes both Libre and Dexcom sensors with different native sampling intervals, and its distributed files use a one-minute time grid. The manuscript does not identify the glucose stream used or explain its temporal processing.
+
+Source: CGMacros dataset documentation
+
+A cohort and data-processing table should report recording duration, usable observations, missingness, sensor type, treatment characteristics where available, exclusions, and glycemic-event counts. The authors should also acknowledge that CGMacros involved structured dietary procedures and that its diabetes subgroups contain only 14-16 participants.
+
+Two independently sourced datasets are useful, but they do not establish independent validation of a locked pipeline if methodological choices were informed by both.
+
+12  The runtime and reproducibility evidence is insufficient for the real time claim
+
+Table 11 reports individual expert runtimes rather than measured end-to-end HBML latency. The framework must generate the forecasts needed for all-expert loss updates, maintain weights, and periodically refit models.
+
+The authors should report hardware, synchronization where relevant, total forecasting latency, tail latency, memory use, and refitting overhead. A mean below one second does not establish that every forecast meets that latency. The reported NODE training time of approximately 0.0105 seconds, alongside a description of 100 training epochs per cycle, particularly requires clarification of the timed operation.
+
+A reproducible release should identify the exact code commit, experiment configurations, seeds, preprocessing scripts, and commands that regenerate the manuscript's outputs. The journal requires availability of custom code central to the conclusions for peer review.
+
+Source: npj Digital Medicine reporting and code policy
+
+Additional corrections before submission
+
+Replace the missing percentages in the Introduction and unresolved references in the Methods. Complete the statistical, author-contribution, funding, and ethics statements.
+
+Reconcile the blanket competing-interest declaration with the industry affiliations, disclosing employment, equity, and sponsor involvement as applicable.
+
+Correct the ARIMA differencing description: d-th differencing is not yτ − yd.
+
+Distinguish forecasting CGM interstitial glucose readings from independently validated blood-glucose prediction.
+
+Explain the different context windows selected for Figures 2 and 3, and show the prespecified primary configuration consistently.
+
+Reduce generic descriptions of established algorithms and devote that space to the actual evaluation protocol, failure analysis, and limitations.
+
+Use the applicable TRIPOD+AI reporting checklist to ensure the revised study is sufficiently documented.
+
+Source: TRIPOD+AI reporting checklist
