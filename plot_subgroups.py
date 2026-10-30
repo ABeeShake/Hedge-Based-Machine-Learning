@@ -176,12 +176,14 @@ def plot_subgroup_ceg(out_dir):
     print(f"Saved CEG subgroup plot -> {out_file}")
 
 if __name__ == "__main__":
-    out_dir = "../overleaf/images/subgroups"
+    out_dir = "overleaf/images/subgroups" if os.path.exists("overleaf") else "../overleaf/images/subgroups"
     os.makedirs(out_dir, exist_ok=True)
     
-    rmse_path = "../cgmacros/rmse.csv"
-    if not os.path.exists(rmse_path) and os.path.exists("../rmse.csv"):
-        rmse_path = "../rmse.csv"
+    rmse_path = "rmse.csv"
+    for cand in ["./cgmacros/rmse.csv", "../cgmacros/rmse.csv", "./rmse.csv", "../rmse.csv"]:
+        if os.path.exists(cand):
+            rmse_path = cand
+            break
         
     print("Generating Subgroup Visualization Plots...")
     plot_subgroup_rmse(rmse_path, out_dir)

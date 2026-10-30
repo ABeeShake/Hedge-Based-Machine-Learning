@@ -101,15 +101,16 @@ def main():
         
     xgboost_params = m.DefaultModelParams.xgboost_params()
     
+    nf_input_size = args.context_len if (args.context_len is not None and args.context_len > 0) else 120
     nhits_params = m.DefaultModelParams.nf_params(
         omit = ["train_n_steps", "hidden_size"],
-        input_size = args.context_len,
+        input_size = nf_input_size,
         h = max_horizon
         )
         
     autoformer_params = m.DefaultModelParams.nf_params(
         omit = ["train_n_steps", "mlp_units"],
-        input_size = args.context_len,
+        input_size = nf_input_size,
         h = max_horizon,
         learning_rate = 0.1
         )

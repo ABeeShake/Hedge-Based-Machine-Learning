@@ -72,11 +72,23 @@ if __name__ == "__main__":
 
     rmse_dfs = []
     for ds in ["weinstock", "cgmacros"]:
-        path = f"../{ds}/rmse.csv"
-        if os.path.exists(path):
-            rmse_dfs.append(pd.read_csv(path))
+        candidates = [
+            f"./{ds}/rmse.csv",
+            f"../{ds}/rmse.csv",
+            f"./Outputs/{ds}/rmse.csv",
+            f"./Outputs/{ds}_rmse.csv",
+        ]
+        for p in candidates:
+            if os.path.exists(p):
+                rmse_dfs.append(pd.read_csv(p))
+                break
     if not rmse_dfs:
-        raise FileNotFoundError("No rmse.csv files found in ../weinstock or ../cgmacros")
+        for root_p in ["./rmse.csv", "../rmse.csv"]:
+            if os.path.exists(root_p):
+                rmse_dfs.append(pd.read_csv(root_p))
+                break
+    if not rmse_dfs:
+        raise FileNotFoundError("No rmse.csv files found in ./rmse.csv or ../weinstock or ../cgmacros")
     rmse = pd.concat(rmse_dfs, ignore_index=True)
     rmse = rmse.dropna(axis=0)
     rmse.id = rmse.id.astype(str).str.pad(width=3,side="left",fillchar="0")

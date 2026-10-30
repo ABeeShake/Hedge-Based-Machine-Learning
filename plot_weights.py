@@ -130,12 +130,23 @@ def plot_weights(file_path, output_path=None):
         plt.show()
 
 def main():
+    import glob
+    default_file = None
+    candidates = sorted(glob.glob("Outputs/**/weights/*expweights_eta10.csv", recursive=True))
+    if candidates:
+        default_file = candidates[0]
+        
     parser = argparse.ArgumentParser(description="Plot expert weights for a patient.")
-    parser.add_argument("--file", type=str, required=True, help="Path to the weights file (csv or pkl).")
-    parser.add_argument("--output", type=str, default="expert_weights_plot.pdf", help="Output path for the plot.")
+    parser.add_argument("--file", type=str, default=default_file, help="Path to the weights file (csv or pkl).")
+    default_out = "overleaf/images/methods/expert_weights_plot.pdf" if os.path.exists("overleaf") else "expert_weights_plot.pdf"
+    parser.add_argument("--output", type=str, default=default_out, help="Output path for the plot.")
     
     args = parser.parse_args()
-    
+    if not args.file or not os.path.exists(args.file):
+        print(f"No weights file found at {args.file}; skipping.")
+        return
+        
+    os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
     plot_weights(args.file, args.output)
 
 if __name__ == "__main__":

@@ -28,7 +28,7 @@ for d in $(find ./Outputs -type d -name "context-*"); do
     echo "Processing: $d"
     echo "Dataset:    $dataset"
 
-    python3 process_results.py \
+    "${PYTHON:-python3}" process_results.py \
         --output_dir "$d" \
         --data_dir "./$dataset" \
         --adaptive_eta \
