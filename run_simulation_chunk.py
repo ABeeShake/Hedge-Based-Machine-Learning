@@ -83,10 +83,12 @@ def build_condition_registry() -> List[Dict[str, Any]]:
 
 
 def parse_conditions_spec(spec: str) -> List[int]:
-    """Parse condition spec like '12-23', '0,1,2', '12', 'all', or '0-3,12-15' into list of ints."""
+    """Parse condition spec like '12-23', '0,1,2', '12', 'all', or '0-3,12-15' into list of ints.
+    Preserves the specified order so callers can prioritize specific conditions."""
     if not spec or spec.strip().lower() == "all":
         return list(range(24))
-    indices = set()
+    indices = []
+    seen = set()
     for part in spec.split(","):
         part = part.strip()
         if not part:
@@ -95,11 +97,17 @@ def parse_conditions_spec(spec: str) -> List[int]:
             s_str, e_str = part.split("-", 1)
             start_i = int(s_str.strip())
             end_i = int(e_str.strip())
-            for i in range(start_i, end_i + 1):
-                indices.add(i)
+            step = 1 if end_i >= start_i else -1
+            for i in range(start_i, end_i + step, step):
+                if i not in seen:
+                    indices.append(i)
+                    seen.add(i)
         else:
-            indices.add(int(part))
-    return sorted(list(indices))
+            val = int(part)
+            if val not in seen:
+                indices.append(val)
+                seen.add(val)
+    return indices
 
 
 def build_grid_tasks(
