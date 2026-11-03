@@ -29,6 +29,7 @@ lightning_logs/
 # Large log files
 *.log
 output_logs/
+slurm_logs/
 
 # Scratch / intermediate output directories
 scratch/
