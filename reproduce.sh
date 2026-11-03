@@ -74,15 +74,18 @@ else
     echo "[Skipping Stage 2: post-processing]"
 fi
 
-# ─── Stage 3: Figure generation ───────────────────────────────────────────────
+# ─── Stage 3: Figure generation & Statistical Tests ───────────────────────────
 echo "========================================================================"
-echo "Stage 3: Generating paper figures"
+echo "Stage 3: Generating paper figures, statistical tests, and baselines"
 echo "========================================================================"
 python3 generate_figures.py
+python3 calculate_statistics.py
+python3 calculate_baselines.py
 python3 plot_and_format_volatility.py
 python3 plot_regime_analysis.py
 python3 plot_subgroups.py
 python3 plot_weights.py
+bash copy_overleaf_images.sh
 
 # ─── Stage 4: LaTeX macros ────────────────────────────────────────────────────
 echo "========================================================================"

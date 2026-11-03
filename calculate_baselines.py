@@ -68,6 +68,8 @@ def compute_cgmacros_baselines():
     """Compute empirical persistence and uniform ensemble RMSE for CGMacros across all 44 participants."""
     baselines = {}
     data_dir = os.path.join(OUTPUTS_DIR, "cgmacros", "data")
+    if not os.path.exists(data_dir):
+        data_dir = os.path.join(BASE_DIR, "cgmacros")
     
     for h_val in HORIZONS:
         h_dir = HORIZON_DIR_MAP[h_val]
@@ -82,6 +84,8 @@ def compute_cgmacros_baselines():
             for f_path in sorted(glob.glob(os.path.join(fc_dir, "*_forecasts.csv"))):
                 pid = os.path.basename(f_path)[:3]
                 t_path = os.path.join(data_dir, f"{pid}.csv")
+                if not os.path.exists(t_path):
+                    t_path = os.path.join(BASE_DIR, "cgmacros", f"{pid}.csv")
                 if not os.path.exists(t_path):
                     continue
                     

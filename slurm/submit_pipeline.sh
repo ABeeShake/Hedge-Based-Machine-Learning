@@ -73,14 +73,17 @@ if [ ! -f "$PYTHON_BIN" ]; then
     PYTHON_BIN="python3"
 fi
 
-echo "Generating paper figures and LaTeX macros..."
+echo "Generating paper figures, statistical tests, baselines, and LaTeX macros..."
 $PYTHON_BIN generate_figures.py
+$PYTHON_BIN calculate_statistics.py
+$PYTHON_BIN calculate_baselines.py
 $PYTHON_BIN plot_and_format_volatility.py
 $PYTHON_BIN plot_regime_analysis.py
 $PYTHON_BIN plot_subgroups.py
 $PYTHON_BIN plot_weights.py
+bash copy_overleaf_images.sh
 $PYTHON_BIN generate_results_macros.py
-echo "All figures and macros generated successfully!"
+echo "All figures, tables, and macros generated successfully!"
 EOF
 
 FIG_JOB=$(sbatch --parsable --dependency=afterok:$POST_JOB slurm/generate_all_figures.slurm)

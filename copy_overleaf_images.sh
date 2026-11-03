@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Find all images directories matches
-find .. -type d -name "images" | while read -r img_dir; do
+find . .. -maxdepth 6 -type d -name "images" 2>/dev/null | sort -u | while read -r img_dir; do
     # Only process directories matching the pattern .../h-*hr/context-*hr/images
     if [[ "$img_dir" != *"/h-"*"hr/context-"*"hr/images" ]]; then
         continue
