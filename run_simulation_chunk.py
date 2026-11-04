@@ -87,6 +87,8 @@ def parse_conditions_spec(spec: str) -> List[int]:
     Preserves the specified order so callers can prioritize specific conditions."""
     if not spec or spec.strip().lower() == "all":
         return list(range(24))
+    # Normalize alternative delimiters (+, space, semicolon, underscore) to comma
+    spec = spec.replace("+", ",").replace(" ", ",").replace(";", ",").replace("_", ",")
     indices = []
     seen = set()
     for part in spec.split(","):

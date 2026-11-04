@@ -130,7 +130,11 @@ echo "Calculated Grid:    $TOTAL_TASKS tasks total (SLURM array range: 0-$MAX_ID
 echo "Array Specification: --array=$ARRAY_SPEC"
 echo "=============================================================================="
 
-SBATCH_CMD="sbatch --array=\"${ARRAY_SPEC}\" --export=ALL,CONDITIONS=\"${CONDITIONS}\",CHUNK_SIZE=\"${CHUNK_SIZE}\" slurm/submit_grid_simulation_array.slurm"
+# Export variables cleanly so SLURM's --export does not split comma-separated values
+export CONDITIONS
+export CHUNK_SIZE
+
+SBATCH_CMD="export CONDITIONS=\"${CONDITIONS}\" CHUNK_SIZE=\"${CHUNK_SIZE}\" && sbatch --array=\"${ARRAY_SPEC}\" --export=ALL slurm/submit_grid_simulation_array.slurm"
 
 if [ "$DRY_RUN" = true ]; then
     echo "[Dry-Run Mode] No job submitted. Proposed command:"
@@ -144,7 +148,7 @@ fi
 
 # Submit job via sbatch
 mkdir -p slurm_logs
-JOB_OUTPUT=$(sbatch --array="${ARRAY_SPEC}" --export=ALL,CONDITIONS="${CONDITIONS}",CHUNK_SIZE="${CHUNK_SIZE}" slurm/submit_grid_simulation_array.slurm)
+JOB_OUTPUT=$(sbatch --array="${ARRAY_SPEC}" --export=ALL slurm/submit_grid_simulation_array.slurm)
 echo "Result: $JOB_OUTPUT"
 
 # Extract Job ID
