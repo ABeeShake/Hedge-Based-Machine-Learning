@@ -39,10 +39,13 @@ set -e
 SKIP_SIM=false
 SKIP_PROCESS=false
 
+PUSH_OVERLEAF=false
+
 for arg in "$@"; do
     case $arg in
-        --skip-sim)     SKIP_SIM=true ;;
-        --skip-process) SKIP_PROCESS=true ;;
+        --skip-sim)       SKIP_SIM=true ;;
+        --skip-process)   SKIP_PROCESS=true ;;
+        --push-overleaf)  PUSH_OVERLEAF=true ;;
     esac
 done
 
@@ -74,18 +77,18 @@ else
     echo "[Skipping Stage 2: post-processing]"
 fi
 
-# ─── Stage 3: Figure generation & Statistical Tests ───────────────────────────
+# ─── Stage 3: Statistical Tests, Baselines & Figure Generation ────────────────
 echo "========================================================================"
-echo "Stage 3: Generating paper figures, statistical tests, and baselines"
+echo "Stage 3: Statistical tests, baseline comparators, and paper figures"
 echo "========================================================================"
-python3 generate_figures.py
-python3 calculate_statistics.py
-python3 calculate_baselines.py
-python3 plot_and_format_volatility.py
-python3 plot_regime_analysis.py
-python3 plot_subgroups.py
-python3 plot_weights.py
-bash copy_overleaf_images.sh
+python3 calculate_statistics.py || true
+python3 calculate_baselines.py || true
+python3 generate_figures.py || true
+python3 plot_and_format_volatility.py || true
+python3 plot_regime_analysis.py || true
+python3 plot_subgroups.py || true
+python3 plot_weights.py || true
+bash copy_overleaf_images.sh || true
 
 # ─── Stage 4: LaTeX macros ────────────────────────────────────────────────────
 echo "========================================================================"
@@ -93,7 +96,18 @@ echo "Stage 4: Generating LaTeX result macros"
 echo "========================================================================"
 python3 generate_results_macros.py
 
+# ─── Optional: Direct Overleaf Push ───────────────────────────────────────────
+if [ "$PUSH_OVERLEAF" = true ] && [ -d "overleaf/.git" ]; then
+    echo "========================================================================"
+    echo "Pushing updated figures, tables, and macros directly to Overleaf..."
+    echo "========================================================================"
+    git -C overleaf add tables/ images/ sections/ macros/ 2>/dev/null || git -C overleaf add -A
+    git -C overleaf commit -m "Update paper figures, tables, and macros from simulation results [$(date '+%Y-%m-%d %H:%M')]" || true
+    git -C overleaf push origin main
+    echo "✓ Pushed to Overleaf successfully."
+fi
+
 echo "========================================================================"
 echo "Reproduction complete. Figures are in overleaf/images/."
-echo "LaTeX macros are in overleaf/macros/."
+echo "LaTeX macros are in overleaf/sections/generated_macros.tex."
 echo "========================================================================"

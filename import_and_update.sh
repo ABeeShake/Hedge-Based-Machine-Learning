@@ -31,10 +31,12 @@ SKIP_SYNC=false
 SKIP_PROCESS=false
 SKIP_FIGURES=false
 AUTO_PUSH=false
+REMOTE_ONLY=false
 
 # Positional and flag parsing
 for arg in "$@"; do
     case $arg in
+        --remote-only|--remote) REMOTE_ONLY=true ;;
         --skip-sync)     SKIP_SYNC=true ;;
         --skip-process)  SKIP_PROCESS=true ;;
         --skip-figures)  SKIP_FIGURES=true ;;
@@ -54,6 +56,20 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+
+if [ "$REMOTE_ONLY" = true ]; then
+    echo "========================================================================"
+    echo "          DIRECT REMOTE VM-TO-OVERLEAF EXECUTION                        "
+    echo "========================================================================"
+    echo "Triggering direct pipeline on remote host: $REMOTE_HOST:$REMOTE_DIR"
+    echo "No files will be downloaded to your local computer."
+    echo "========================================================================"
+    ssh "$REMOTE_HOST" "cd $REMOTE_DIR && bash vm_update_overleaf.sh"
+    echo "========================================================================"
+    echo "✓ Remote Overleaf pipeline completed directly on VM."
+    echo "========================================================================"
+    exit 0
+fi
 
 echo "========================================================================"
 echo "          HBML SIMULATION IMPORT & OVERLEAF UPDATE PIPELINE             "

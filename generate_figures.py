@@ -51,6 +51,13 @@ if __name__ == "__main__":
     )
     args = _parser.parse_args()
 
+    # Determine Overleaf paths (supports running from root or subfolder)
+    OVERLEAF_DIR = "overleaf" if os.path.exists("overleaf") else "../overleaf"
+    TABLES_DIR = os.path.join(OVERLEAF_DIR, "tables")
+    IMAGES_DIR = os.path.join(OVERLEAF_DIR, "images")
+    os.makedirs(TABLES_DIR, exist_ok=True)
+    os.makedirs(IMAGES_DIR, exist_ok=True)
+
     # Post Processing
     ## find corrupted IDs for Weinstock
     print("Finding corrupted IDs for Weinstock...")
@@ -231,19 +238,31 @@ if __name__ == "__main__":
             cleaned_pivot.dataset.shift(-1) == cleaned_pivot.dataset
         ), "\\\\\\cmidrule{1-6}", "\\\\\\")
     cleaned_pivot.loc[cleaned_pivot.shape[0]-1, "endings"] = "\\\\\\"
-    cleaned_pivot.to_csv(f"../overleaf/tables/{_out_file}", index=False)
-    print(f"Saved RMSE table → {_out_file}")
+    cleaned_pivot.to_csv(os.path.join(TABLES_DIR, _out_file), index=False)
+    print(f"Saved RMSE table → {os.path.join(TABLES_DIR, _out_file)}")
 
     # ---- Max-AE Analysis ----
     print("Running Max-AE Analysis...")
     try:
         maxae_dfs = []
         for ds in ["weinstock", "cgmacros"]:
-            path = f"../{ds}/maxae.csv"
-            if os.path.exists(path):
-                maxae_dfs.append(pd.read_csv(path))
+            candidates = [
+                f"./{ds}/maxae.csv",
+                f"../{ds}/maxae.csv",
+                f"./Outputs/{ds}/maxae.csv",
+                f"./Outputs/{ds}_maxae.csv",
+            ]
+            for p in candidates:
+                if os.path.exists(p):
+                    maxae_dfs.append(pd.read_csv(p))
+                    break
         if not maxae_dfs:
-            raise FileNotFoundError("No maxae.csv files found in ../weinstock or ../cgmacros")
+            for root_p in ["./maxae.csv", "../maxae.csv"]:
+                if os.path.exists(root_p):
+                    maxae_dfs.append(pd.read_csv(root_p))
+                    break
+        if not maxae_dfs:
+            raise FileNotFoundError("No maxae.csv files found in ./maxae.csv, ./Outputs, or ../weinstock")
         maxae = pd.concat(maxae_dfs, ignore_index=True)
         maxae = maxae.dropna(axis=0)
         maxae.id = maxae.id.astype(str).str.pad(width=3, side="left", fillchar="0")
@@ -291,14 +310,14 @@ if __name__ == "__main__":
         )
         maxae_pivot.loc[maxae_pivot.shape[0]-1, "endings"] = "\\\\\\"
         maxae_out = "maxae_pivot_median.csv" if args.median else "maxae_pivot_mean.csv"
-        maxae_pivot.to_csv(f"../overleaf/tables/{maxae_out}", index=False)
-        print(f"Saved Max-AE table → {maxae_out}")
+        maxae_pivot.to_csv(os.path.join(TABLES_DIR, maxae_out), index=False)
+        print(f"Saved Max-AE table → {os.path.join(TABLES_DIR, maxae_out)}")
     except Exception as e:
         print(f"Skipping Max-AE Analysis due to: {e}")
 
     # ---- Individual RMSE Contribution Analysis ----
     print("Running Individual RMSE Contribution Analysis...")
-    os.makedirs("../overleaf/images/rmse_contrib", exist_ok=True)
+    os.makedirs(os.path.join(IMAGES_DIR, "rmse_contrib"), exist_ok=True)
 
     # Define a consistent colour for each model (re-use GlobalValues where possible,
     # fall back to a tab10 cycle for any model not in color_params).
@@ -378,7 +397,7 @@ if __name__ == "__main__":
                 continue
             h_str = str(h).replace(".", "p")
 
-            strip_dir = "../overleaf/images/rmse_contrib"
+            strip_dir = os.path.join(IMAGES_DIR, "rmse_contrib")
             os.makedirs(strip_dir, exist_ok=True)
 
             # --- Figure A: Expert models + HBML-SFHDF representative ---
@@ -454,7 +473,7 @@ if __name__ == "__main__":
 
                 # Also save as CSV for inspection
                 dev_pct.to_csv(
-                    f"../overleaf/tables/rmse_dev_{ds}_h{str(h).replace('.','p')}_c{ctx}.csv"
+                    os.path.join(TABLES_DIR, f"rmse_dev_{ds}_h{str(h).replace('.','p')}_c{ctx}.csv")
                 )
 
                 n_ids, n_mods = dev_pct.shape
@@ -485,7 +504,7 @@ if __name__ == "__main__":
 
                 plt.tight_layout()
                 h_str = str(h).replace(".", "p")
-                hmap_dir = "../overleaf/images/rmse_contrib"
+                hmap_dir = os.path.join(IMAGES_DIR, "rmse_contrib")
                 os.makedirs(hmap_dir, exist_ok=True)
                 hmap_path = f"{hmap_dir}/heatmap_{ds}_h{h_str}_c{ctx}.pdf"
                 plt.savefig(hmap_path, dpi=300, bbox_inches="tight")
@@ -593,7 +612,7 @@ if __name__ == "__main__":
             max_ceg["endings"] = np.where(np.logical_and(max_ceg["htab"].shift(-1) != "", max_ceg.dataset.shift(-1) == max_ceg.dataset), "\\\\\\cmidrule{2-9}","\\\\\\")
             max_ceg["endings"] = np.where(np.logical_and(max_ceg.dataset.shift(-1) != max_ceg.dataset, max_ceg.dataset.shift(-1).notna()), "\\\\\\cmidrule{1-9}", max_ceg["endings"])
             
-        max_ceg.to_csv("../overleaf/tables/max_ceg.csv", index=False)
+        max_ceg.to_csv(os.path.join(TABLES_DIR, "max_ceg.csv"), index=False)
         print("Saved original CEG table.")
 
         # ── HBML-only CEG comparison table ────────────────────────────────────
@@ -661,8 +680,8 @@ if __name__ == "__main__":
             hbml_max_ceg.loc[~_mask_sh & _mask_sd, "endings"] = "\\\\\\cmidrule{2-12}"
             hbml_max_ceg.loc[~_mask_sd & hbml_max_ceg.dataset.shift(-1).notna(), "endings"] = "\\\\\\cmidrule{1-12}"
 
-            hbml_max_ceg.to_csv("../overleaf/tables/hbml_ceg_comparison.csv", index=False)
-            print("Saved HBML-only CEG comparison table → ../overleaf/tables/hbml_ceg_comparison.csv")
+            hbml_max_ceg.to_csv(os.path.join(TABLES_DIR, "hbml_ceg_comparison.csv"), index=False)
+            print(f"Saved HBML-only CEG comparison table → {os.path.join(TABLES_DIR, 'hbml_ceg_comparison.csv')}")
         else:
             print("  Skipping HBML CEG comparison: 'model' column not found in full_ceg.csv")
 
@@ -706,7 +725,7 @@ if __name__ == "__main__":
                 subset["endings"] = np.where(subset["htab"].shift(-1) != "", "\\\\\\cmidrule{1-6}", "\\\\\\")
                 if len(subset) > 0:
                     subset.iloc[-1, subset.columns.get_loc("endings")] = "\\\\\\"
-                subset.to_csv(f"../overleaf/tables/rmse_{_stat_col}_cgmacros_{status}.csv", index=False)
+                subset.to_csv(os.path.join(TABLES_DIR, f"rmse_{_stat_col}_cgmacros_{status}.csv"), index=False)
                 print(f"Saved Diabetic RMSE table for {status}.")
 
         cgmacros_ceg = ceg[ceg.dataset == "cgmacros"].copy()
@@ -741,7 +760,7 @@ if __name__ == "__main__":
                     subset["htab"] = np.where(subset.horizon.shift() == subset.horizon, "", "\\multirow[t]{"+subset['h_freq'].astype(str)+"}{*}{"+subset['horizon'].astype(str)+"}")
                     subset["endings"] = np.where(subset["htab"].shift(-1) != "", "\\\\\\cmidrule{2-8}", "\\\\\\")
                 
-                subset.to_csv(f"../overleaf/tables/ceg_cgmacros_{status}.csv", index=False)
+                subset.to_csv(os.path.join(TABLES_DIR, f"ceg_cgmacros_{status}.csv"), index=False)
                 print(f"Saved Original Diabetic CEG table for {status}.")
 
         # Adaptive Regret
@@ -792,7 +811,7 @@ if __name__ == "__main__":
             ax.set_xlim((xmin,xmax)); ax.set_ylim((ymin,ymax))
             ax.set_xlabel("Time Elapsed (min)", fontsize=14); ax.set_ylabel("Regret Over Time ([mg/dL]/min)", fontsize=14)
             ax.tick_params(axis='both', labelsize=12)
-            regret_dir = f"../overleaf/images/regret/{d}"
+            regret_dir = os.path.join(IMAGES_DIR, "regret", d)
             os.makedirs(regret_dir, exist_ok=True)
             h_str_r = str(h).replace(".","p").replace("half","0p5")
             c_str_r = str(c).replace("full","full")
@@ -824,7 +843,7 @@ if __name__ == "__main__":
                 forecasts, losses,
                 save_weights=True, forecast_type="mean", **settings
             )
-            methods_dir = "../overleaf/images/methods"
+            methods_dir = os.path.join(IMAGES_DIR, "methods")
             os.makedirs(methods_dir, exist_ok=True)
             viz.plot_weights(W, names=forecasts.keys(), show=False, save=True, path=f"{methods_dir}/expert_weights_plot.pdf")
             
@@ -854,7 +873,7 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"  Skipping Rolling RMSE plot due to: {e}")
                 
-            clarke_dir = "../overleaf/images/clarke/weinstock"
+            clarke_dir = os.path.join(IMAGES_DIR, "clarke", "weinstock")
             os.makedirs(clarke_dir, exist_ok=True)
             preds = pd.read_csv("../weinstock/h-halfhr/context-6hr/forecasts/103_fullforecasts_advanced.csv")["HBML-SFHDF"]
             ref = pd.read_csv("../weinstock/data/103.csv")["Libre.GL"]

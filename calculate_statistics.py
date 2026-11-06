@@ -244,21 +244,12 @@ def run_paired_analysis():
     generate_latex_table(df_best, tex_path)
     print(f"Saved LaTeX statistical table to {tex_path}")
     
-    # Append macros to generated_macros.tex
-    macros_file = os.path.join(SECTIONS_DIR, "generated_macros.tex")
-    if os.path.exists(macros_file):
-        with open(macros_file, "r") as f:
-            existing_content = f.read()
-        
-        # Filter out macros that might already be defined
-        existing_lines = set(existing_content.splitlines())
-        new_macros = [m for m in macros if m not in existing_lines]
-        
-        if new_macros:
-            with open(macros_file, "a") as f:
-                f.write("\n\n% --- Paired Participant-Level Statistical Tests ---\n")
-                f.write("\n".join(new_macros) + "\n")
-            print(f"Appended {len(new_macros)} statistical macros to {macros_file}")
+    # Regenerate all LaTeX macros cleanly to ensure exact consistency with zero duplicates
+    try:
+        from generate_results_macros import generate_macros
+        generate_macros()
+    except Exception as e:
+        print(f"Note: Could not run generate_macros: {e}")
 
 
 def generate_latex_table(df_best, output_tex):

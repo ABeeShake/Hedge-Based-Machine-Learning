@@ -949,7 +949,8 @@ def main():
         h_str_p = str(horizon).replace(".", "p").replace("half", "0p5")
         c_str_p = str(context)
         e_str_p = str(args.eta).replace(".", "p") if float(args.eta) != int(float(args.eta)) else str(int(float(args.eta)))
-        regret_img_dir = os.path.join("..", "overleaf", "images", "regret", dataset_name)
+        target_overleaf = "overleaf" if os.path.exists("overleaf") else os.path.join("..", "overleaf")
+        regret_img_dir = os.path.join(target_overleaf, "images", "regret", dataset_name)
         os.makedirs(regret_img_dir, exist_ok=True)
 
         omit = ["FS (Decay)", "FS (Uniform)", "FS (Decay2)", "MoE"] + args.omit_models

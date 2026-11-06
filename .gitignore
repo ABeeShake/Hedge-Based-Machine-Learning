@@ -58,6 +58,8 @@ weinstock/
 # Results files
 rmse.csv
 maxae.csv
+volatility_results.csv
+output_timings.csv
 
 # Old files
 archive/
