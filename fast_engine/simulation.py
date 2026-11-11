@@ -173,6 +173,7 @@ def _worker_run_patient(args_tuple):
         os.makedirs(fc_dir, exist_ok=True)
         fc_df = pd.DataFrame(result["forecasts"])
         fc_df.to_csv(fc_path, index=False)
+        print(f"✓ Patient [{id_num}] completed in {result['total_time_s']:.1f}s -> {fc_path}", flush=True)
         
     return id_num, result["total_time_s"]
 

@@ -30,7 +30,7 @@ if [ ! -f "$PYTHON_BIN" ]; then
 fi
 
 CONDITIONS="12-23"
-CHUNK_SIZE="20"
+CHUNK_SIZE="5"
 THROTTLE="4"
 DRY_RUN=false
 LIST_ONLY=false
@@ -40,7 +40,7 @@ usage() {
     echo ""
     echo "Options:"
     echo "  --conditions <spec>   Condition range/list (e.g. '12-23', '0-23', '0,4,12'). [Default: 12-23]"
-    echo "  --chunk_size <n>      Number of patients per chunk. [Default: 20]"
+    echo "  --chunk_size <n>      Number of patients per chunk. [Default: 5]"
     echo "  --throttle <n>        Max concurrent SLURM tasks (%n). [Default: 4]"
     echo "  --dry-run             Display plan and exact sbatch command without submitting."
     echo "  --list                Display full grid task-to-chunk mapping table and exit."

@@ -129,7 +129,7 @@ def build_grid_tasks(
             continue
         cond = registry[c_idx]
         ds = cond["dataset"]
-        csv_files = sorted(glob.glob(os.path.join(ds, "*.csv")))
+        csv_files = get_dataset_csv_files(ds)
         total_patients = len(csv_files)
         if total_patients == 0:
             continue
@@ -155,6 +155,13 @@ def build_grid_tasks(
 
     return grid_tasks
 
+
+
+def get_dataset_csv_files(dataset: str) -> List[str]:
+    """Return sorted list of valid participant CSV files for dataset, excluding summary tables."""
+    files = sorted(glob.glob(os.path.join(dataset, "*.csv")))
+    # Exclude non-patient master/summary CSVs like weinstock/weinstock.csv or cgmacros/cgmacros.csv
+    return [f for f in files if os.path.basename(f) != f"{dataset}.csv"]
 
 
 def get_patient_id(path: str) -> str:
@@ -192,7 +199,7 @@ def list_conditions(registry: List[Dict[str, Any]]):
     
     for cond in registry:
         ds = cond["dataset"]
-        csv_files = sorted(glob.glob(os.path.join(ds, "*.csv")))
+        csv_files = get_dataset_csv_files(ds)
         total_p = len(csv_files)
         completed_p = 0
         for f in csv_files:
@@ -232,7 +239,7 @@ def run_condition(
     c_str = cond["context_str"]
     cond_dir = cond["output_dir"]
     
-    csv_files = sorted(glob.glob(os.path.join(ds, "*.csv")))
+    csv_files = get_dataset_csv_files(ds)
     if not csv_files:
         print(f"[Error] No CSV files found in {ds}/")
         return
@@ -412,7 +419,7 @@ def main():
         return
 
     # Check for Grid Mode queries
-    chunk_sz = args.chunk_size if args.chunk_size is not None else (int(os.environ["CHUNK_SIZE"]) if "CHUNK_SIZE" in os.environ else 20)
+    chunk_sz = args.chunk_size if args.chunk_size is not None else (int(os.environ["CHUNK_SIZE"]) if "CHUNK_SIZE" in os.environ else 5)
     cond_spec = args.conditions if args.conditions is not None else os.environ.get("CONDITIONS")
 
     if args.count_grid_tasks:

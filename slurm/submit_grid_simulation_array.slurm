@@ -40,13 +40,17 @@ export OPENBLAS_NUM_THREADS=1
 export VECLIB_MAXIMUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
+# Run multi-worker simulation purely on CPU cores (avoids GPU lock contention across workers)
+export CUDA_VISIBLE_DEVICES=""
+export FAST_ENGINE_DEVICE="cpu"
+
 PYTHON_BIN="./hedge-env/bin/python3"
 if [ ! -f "$PYTHON_BIN" ]; then
     PYTHON_BIN="python3"
 fi
 
 CONDITIONS="${CONDITIONS:-12-23}"
-CHUNK_SIZE="${CHUNK_SIZE:-20}"
+CHUNK_SIZE="${CHUNK_SIZE:-5}"
 
 echo "=============================================================================="
 echo "SLURM Job ID:       $SLURM_JOB_ID"

@@ -4,6 +4,7 @@ Eliminates framework overheads (Lightning, Pandas infer_objects, repeated AIC gr
 while preserving exact model specifications and numerical fidelity.
 """
 
+import os
 import numpy as np
 import torch
 import torch.nn as nn
@@ -22,6 +23,18 @@ import xgboost as xgb
 from xgboost import XGBRegressor
 from neuralforecast.models import NHITS
 import ExpMethods.models as m
+
+
+def resolve_device(device: Optional[torch.device] = None) -> torch.device:
+    """Resolve compute device. Defaults to CPU to avoid multi-worker GPU lock contention
+    and CUDA kernel dispatch serialization on shared multi-core nodes, unless
+    FAST_ENGINE_DEVICE='cuda' is explicitly requested and CUDA is available."""
+    if device is not None:
+        return device
+    env_dev = os.environ.get("FAST_ENGINE_DEVICE", "cpu").strip().lower()
+    if env_dev == "cuda" and torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
 
 
 class FastNODE:
@@ -47,11 +60,7 @@ class FastNODE:
         self.weight_decay = weight_decay
         self.batch_size = batch_size
         
-        # Auto-detect device: CUDA if available, else CPU (on macOS CPU is faster than MPS for small-batch ODEs)
-        if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            self.device = device
+        self.device = resolve_device(device)
             
         node_params = m.DefaultModelParams.node_params(
             horizon=horizon,
@@ -132,8 +141,7 @@ class FastNHITS:
         if input_size is None or input_size <= 0:
             input_size = 120
         self.input_size = input_size
-        self.retrain_interval = retrain_interval
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu") if device is None else device
+        self.device = resolve_device(device)
         
         # Initialize core PyTorch module
         self.model = NHITS(h=horizon, input_size=self.input_size, max_steps=1).to(self.device)
@@ -151,7 +159,7 @@ class FastNHITS:
             pad_len = self.input_size - len(vals)
             vals = np.pad(vals, (pad_len, 0), mode="edge")
             
-        insample_y = torch.tensor(vals, dtype=torch.float32, device=self.device).view(1, -1, 1)
+        insample_y = torch.as_tensor(vals, dtype=torch.float32, device=self.device).view(1, -1, 1)
         insample_mask = torch.ones_like(insample_y)
         
         batch = {
@@ -247,13 +255,17 @@ class FastXGBoost:
         self.learning_rate = learning_rate
         self.retrain_interval = retrain_interval
         
+        dev_choice = (os.environ.get("FAST_ENGINE_DEVICE", "cpu").strip().lower())
+        use_cuda = (dev_choice == "cuda" and torch.cuda.is_available())
+        
         self.params = {
             "max_depth": 6,
             "eta": learning_rate,
             "objective": "reg:squarederror",
             "tree_method": "hist",
-            "device": "cuda" if torch.cuda.is_available() else "cpu",
+            "device": "cuda" if use_cuda else "cpu",
             "verbosity": 0,
+            "n_jobs": 1,
         }
         self.booster = None
         self.step_count = 0
@@ -275,12 +287,13 @@ class FastXGBoost:
             # Initial fit
             self.booster = xgb.train(self.params, dtrain, num_boost_round=self.n_estimators)
         elif self.step_count % self.retrain_interval == 0:
-            # Periodic update / retrain with warm start
+            # Periodic update: retrain fresh booster on updated context window.
+            # Do NOT pass xgb_model=self.booster, which would append n_estimators new trees
+            # to the ensemble on every retrain, causing unbounded tree accumulation (up to 30,000 trees).
             self.booster = xgb.train(
                 self.params,
                 dtrain,
                 num_boost_round=self.n_estimators,
-                xgb_model=self.booster,
             )
             
         # Predict on most recent observation

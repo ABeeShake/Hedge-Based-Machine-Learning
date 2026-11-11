@@ -88,7 +88,8 @@ def main():
             sys.exit(1)
     elif args.all_completed:
         for cond in registry:
-            csv_files = sorted(glob.glob(os.path.join(cond["dataset"], "*.csv")))
+            ds = cond["dataset"]
+            csv_files = [f for f in sorted(glob.glob(os.path.join(ds, "*.csv"))) if os.path.basename(f) != f"{ds}.csv"]
             complete = all(is_patient_complete(cond["output_dir"], get_patient_id(f)) for f in csv_files)
             if complete and csv_files:
                 process_condition(cond, overwrite=args.overwrite, plot_ceg=args.plot_ceg)
