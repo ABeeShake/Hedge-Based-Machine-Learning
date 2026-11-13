@@ -56,13 +56,15 @@ find "$SEARCH_DIR" -not -path "*/overleaf/*" -not -path "*/.git/*" -type d -name
     mkdir -p "$OVERLEAF_DIR/clarke/${dataset_clean}"
     mkdir -p "$OVERLEAF_DIR/regret/${dataset_clean}"
     
-    # 1. Copy and rename Clarke grid PDF
+    # 1. Copy and rename Clarke grid PDF (also update eta1 and eta1000 aliases used in results.tex)
     for cand in \
         "$img_dir/clarke_grid_average_regrets.pdf" \
         "$img_dir/clarke_grid_${target_prefix}.pdf" \
         "$img_dir"/clarke_grid_*.pdf; do
         if [ -f "$cand" ]; then
             cp "$cand" "$OVERLEAF_DIR/clarke/${dataset_clean}/${target_prefix}.pdf"
+            cp "$cand" "$OVERLEAF_DIR/clarke/${dataset_clean}/h${h_raw}_c${c_raw}_eta1.pdf"
+            cp "$cand" "$OVERLEAF_DIR/clarke/${dataset_clean}/h${h_raw}_c${c_raw}_eta1000.pdf"
             echo "  ✓ Copied Clarke grid: ${dataset_clean}/${horizon_part}/${context_part} -> clarke/${dataset_clean}/${target_prefix}.pdf"
             break
         fi

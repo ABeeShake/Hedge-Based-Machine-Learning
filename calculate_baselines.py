@@ -76,19 +76,28 @@ CGMACROS_UNIF_MAP = {
 }
 
 
-def compute_cgmacros_baselines():
-    """Compute empirical persistence and uniform ensemble RMSE for CGMacros across all 44 participants."""
+def compute_dataset_baselines(ds):
+    """Compute empirical persistence and uniform ensemble RMSE for a dataset across all participants."""
     baselines = {}
-    data_dir = os.path.join(OUTPUTS_DIR, "cgmacros", "data")
+    data_dir = os.path.join(OUTPUTS_DIR, ds, "data")
     if not os.path.exists(data_dir):
-        data_dir = os.path.join(BASE_DIR, "cgmacros")
+        data_dir = os.path.join(BASE_DIR, ds)
     
     for h_val in HORIZONS:
         h_dir = HORIZON_DIR_MAP[h_val]
         h_steps = HORIZON_STEPS[h_val]
+        h_code = HORIZON_MAP[h_val]
         for ctx in CONTEXTS:
             ctx_dir = f"context-{ctx}hr"
-            fc_dir = os.path.join(OUTPUTS_DIR, "cgmacros", h_dir, ctx_dir, "forecasts")
+            fc_dir = os.path.join(OUTPUTS_DIR, ds, h_dir, ctx_dir, "forecasts")
+            dev_path = os.path.join(TABLES_DIR, f"rmse_dev_{ds}_h{h_code}_c{ctx}.csv")
+            valid_ids = None
+            if os.path.exists(dev_path):
+                try:
+                    dev_df = pd.read_csv(dev_path)
+                    valid_ids = set(dev_df["id"].astype(str).str.zfill(3))
+                except Exception:
+                    valid_ids = None
             
             u_rmses = []
             p_rmses = []
@@ -96,11 +105,15 @@ def compute_cgmacros_baselines():
             if os.path.isdir(fc_dir):
                 for f_path in sorted(glob.glob(os.path.join(fc_dir, "*_forecasts.csv"))):
                     pid = os.path.basename(f_path)[:3]
+                    if valid_ids is not None and pid not in valid_ids:
+                        continue
                     t_path = os.path.join(data_dir, f"{pid}.csv")
                     if not os.path.exists(t_path):
                         continue
                         
                     fc_df = pd.read_csv(f_path)
+                    if "HoltWinters" in fc_df.columns and "ETS" not in fc_df.columns:
+                        fc_df["ETS"] = fc_df["HoltWinters"]
                     t_df = pd.read_csv(t_path)
                     
                     col = [c for c in t_df.columns if "gl" in c.lower() or "cgm" in c.lower() or "value" in c.lower()][0]
@@ -108,12 +121,12 @@ def compute_cgmacros_baselines():
                     cols = [c for c in MODELS if c in fc_df.columns]
                     
                     n_pts = min(len(fc_df), len(targets))
-                    if n_pts < 100:
+                    if n_pts < 120:
                         continue
                         
                     y_true = targets[:n_pts]
                     f_unif = fc_df[cols].iloc[:n_pts].mean(axis=1).values
-                    eval_idx = np.arange(100, n_pts)
+                    eval_idx = np.arange(100, n_pts - 10)
                     
                     u_rmse = np.sqrt(np.mean((f_unif[eval_idx] - y_true[eval_idx]) ** 2))
                     u_rmses.append(u_rmse)
@@ -125,24 +138,30 @@ def compute_cgmacros_baselines():
                     p_rmses.append(p_rmse)
                 
             if len(u_rmses) > 0 and len(p_rmses) > 0:
-                baselines[("cgmacros", h_val, ctx)] = {
+                baselines[(ds, h_val, ctx)] = {
                     "uniform_rmse": float(np.mean(u_rmses)),
                     "persistence_rmse": float(np.mean(p_rmses)),
                 }
-            else:
-                baselines[("cgmacros", h_val, ctx)] = {
+            elif ds == "cgmacros":
+                baselines[(ds, h_val, ctx)] = {
                     "uniform_rmse": CGMACROS_UNIF_MAP.get((h_val, ctx), np.nan),
                     "persistence_rmse": CGMACROS_PERS_MAP.get((h_val, ctx), np.nan),
+                }
+            else:
+                baselines[(ds, h_val, ctx)] = {
+                    "uniform_rmse": np.nan,
+                    "persistence_rmse": np.nan,
                 }
     return baselines
 
 
 def evaluate_baselines():
     stats_map = load_authoritative_stats()
-    cg_baselines = compute_cgmacros_baselines()
+    all_baselines = {}
+    for ds in DATASETS:
+        all_baselines.update(compute_dataset_baselines(ds))
     
-    # Weinstock persistence and uniform ensemble values derived from full cohort evaluation
-    # Persistence: 30 min = 31.37 mg/dL, 2 hr = 74.23 mg/dL, 5 hr = 126.50 mg/dL
+    # Fallback Weinstock persistence and uniform ensemble values if raw files are absent
     weinstock_pers = {0.5: 31.37, 2.0: 74.23, 5.0: 126.50}
     weinstock_unif = {
         (0.5, "6"): 23.45, (0.5, "12"): 22.19, (0.5, "24"): 21.19, (0.5, "full"): 22.50,
@@ -165,11 +184,11 @@ def evaluate_baselines():
                 best_exp_rmse = auth["best_expert_rmse"]
                 best_exp_name = auth["best_expert"]
                 
-                if ds == "cgmacros":
-                    unif_rmse = cg_baselines[key]["uniform_rmse"]
-                    pers_rmse = cg_baselines[key]["persistence_rmse"]
-                else:
+                unif_rmse = all_baselines.get(key, {}).get("uniform_rmse", np.nan)
+                pers_rmse = all_baselines.get(key, {}).get("persistence_rmse", np.nan)
+                if np.isnan(unif_rmse) and ds == "weinstock":
                     unif_rmse = weinstock_unif.get((h_val, ctx), np.nan)
+                if np.isnan(pers_rmse) and ds == "weinstock":
                     pers_rmse = weinstock_pers.get(h_val, np.nan)
                     
                 diff_unif = unif_rmse - hbml_rmse

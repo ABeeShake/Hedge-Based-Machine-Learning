@@ -144,9 +144,10 @@ def _hbml_col(df: pd.DataFrame) -> str:
 def _expert_cols(df: pd.DataFrame, hbml_col: str) -> list:
     """Return the list of non-HBML model columns."""
     skip = {"HBML", "HBML (c)", "HBML (d)", "HBML (fd)", "HBML-SFH",
-            "HBML-SFHDF", "FS (Start)", "FS (Uniform)", "FS (Decay)",
+            "HBML-SFHDF", "HBML-SFH-SD", "HBML-SFH-Meta",
+            "FS (Start)", "FS (Uniform)", "FS (Decay)",
             "LSTM", "Autoformer"}
-    return [c for c in df.columns if c not in skip]
+    return [c for c in df.columns if c not in skip and not c.startswith("HBML")]
 
 
 # ---------------------------------------------------------------------------

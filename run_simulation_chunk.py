@@ -172,18 +172,28 @@ def get_patient_id(path: str) -> str:
     return os.path.splitext(base)[0]
 
 
-# Timestamp cutoff: Only files created on or after Oct 15, 2026 18:47 UTC were generated
-# by the new high-performance engine (fast_engine). Older files are from legacy simulations.
-FAST_ENGINE_CUTOFF = 1792090000.0
+# Timestamp cutoff: Only files created on or after Oct 15, 2026 20:10 UTC were generated
+# by the new high-performance engine (fast_engine). Older files are from legacy simulations
+# or legacy post-processing runs.
+FAST_ENGINE_CUTOFF = 1792095000.0
 
 
 def is_patient_complete(cond_dir: str, p_id: str) -> bool:
-    """Check if the forecast file for a patient exists and was produced by the new fast engine."""
+    """Check if the forecast file for a patient exists, was produced by the new fast engine,
+    and is structurally complete (not truncated or from a --debug run)."""
     fc_path = os.path.join(cond_dir, "forecasts", f"{p_id}_forecasts.csv")
     if not (os.path.exists(fc_path) and os.path.getsize(fc_path) > 500):
         return False
-    # Reject files from legacy/old simulations (prior to Oct 15 2026 21:00 UTC)
+    # Reject files from legacy/old simulations (prior to Oct 15 2026 20:10 UTC)
     if os.path.getmtime(fc_path) < FAST_ENGINE_CUTOFF:
+        return False
+    try:
+        df = pd.read_csv(fc_path, usecols=["NODE"])
+        arr = df["NODE"].to_numpy()
+        # Reject debug runs or truncated files where the tail is all zeros
+        if len(arr) < 100 or arr[-1] == 0.0:
+            return False
+    except Exception:
         return False
     return True
 

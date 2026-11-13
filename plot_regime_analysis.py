@@ -18,7 +18,6 @@ import argparse
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
 from pathlib import Path
 
 import sys
@@ -54,7 +53,7 @@ def get_hbml_col(models):
     raise ValueError(f"No HBML model found in {models}")
 
 def get_expert_cols(models, hbml_col):
-    return [m for m in models if m != hbml_col and m not in ["LSTM", "Autoformer", "FS (Start)", "FS (Uniform)", "FS (Decay)"]]
+    return [m for m in models if m != hbml_col and not str(m).startswith("HBML") and m not in ["LSTM", "Autoformer", "FS (Start)", "FS (Uniform)", "FS (Decay)"]]
 
 def plot_figure2_scatter(detail_rmse_path, out_dir, tag):
     """Figure 2: HBML vs. Best Expert Regime Scatter"""

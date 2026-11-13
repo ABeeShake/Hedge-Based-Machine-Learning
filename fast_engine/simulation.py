@@ -150,11 +150,17 @@ def _worker_run_patient(args_tuple):
         
     fc_path = os.path.join(output_dir, "forecasts", f"{id_num}_forecasts.csv") if output_dir else None
     
-    # Check if already completed with new fast engine (on or after Oct 15, 2026 18:47 UTC)
-    FAST_ENGINE_CUTOFF = 1792090000.0
+    # Check if already completed with new fast engine (on or after Oct 15, 2026 20:10 UTC)
+    FAST_ENGINE_CUTOFF = 1792095000.0
     if skip_existing and fc_path and os.path.exists(fc_path) and os.path.getsize(fc_path) > 500:
         if os.path.getmtime(fc_path) >= FAST_ENGINE_CUTOFF:
-            return id_num, 0.0
+            try:
+                _df = pd.read_csv(fc_path, usecols=["NODE"])
+                _arr = _df["NODE"].to_numpy()
+                if len(_arr) >= 100 and _arr[-1] != 0.0 and _arr[21 + horizon - 1] == 0.0 and _arr[21 + horizon] != 0.0:
+                    return id_num, 0.0
+            except Exception:
+                pass
         
     import ExpMethods.data as data
     

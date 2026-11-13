@@ -2,7 +2,6 @@ import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
 from pathlib import Path
 
 from ExpMethods.globals import GlobalValues
@@ -27,9 +26,9 @@ def clean_data(df, is_ceg=False):
     if "model" not in df.columns:
         return df
     
-    # drop old hbml variants
-    df = df[~df["model"].isin(["HBML (c)", "HBML (d)", "LSTM", "Autoformer", "FS (Start)", "FS (Uniform)", "FS (Decay)"])]
-    df.loc[df["model"].isin(["HBML-SFHDF", "HBML (fd)"]), "model"] = "HBML"
+    # drop old/non-primary hbml variants
+    df = df[~df["model"].isin(["HBML (c)", "HBML (d)", "HBML (fd)", "HBML-SFH", "HBML-SFH-SD", "HBML-SFH-Meta", "LSTM", "Autoformer", "FS (Start)", "FS (Uniform)", "FS (Decay)"])].copy()
+    df.loc[df["model"].isin(["HBML-SFHDF"]), "model"] = "HBML"
     df.loc[df["horizon"] == "half", "horizon"] = "0.5"
     
     df["status"] = df["id"].apply(get_diabetic_status)
@@ -76,20 +75,37 @@ def plot_subgroup_rmse(rmse_path, out_dir):
     model_order = [m for m in model_order if m in agg["model"].unique()]
     palette = [COLORS.get(m, "#333333") for m in model_order]
     
-    # Create plot
+    # Create plot using matplotlib
     plt.rcParams.update(GlobalValues.plot_params)
-    sns.set_style("whitegrid")
-    
-    g = sns.catplot(
-        data=agg, x="status", y="rmse", hue="model", col="horizon", 
-        kind="bar", palette=palette, hue_order=model_order,
-        height=5, aspect=0.9, sharey=False, edgecolor="white", linewidth=0.5,
-        legend=False
-    )
-    g.set_axis_labels("Diabetic Status", "Median RMSE (mg/dL)")
-    g.set_titles("Horizon: {col_name} hr")
+    statuses = ["non-T2D", "pre-T2D", "T2D"]
+    horizons = ["0.5", "2", "5"]
+    fig, axes = plt.subplots(1, len(horizons), figsize=(15, 5), sharey=False)
+    n_models = len(model_order)
+    bar_width = 0.8 / max(n_models, 1)
+    x_pos = np.arange(len(statuses))
+
+    for h_idx, h_val in enumerate(horizons):
+        ax = axes[h_idx]
+        h_df = agg[agg["horizon"] == h_val]
+        for m_idx, m_name in enumerate(model_order):
+            m_df = h_df[h_df["model"] == m_name].set_index("status")
+            vals = [m_df.loc[s, "rmse"] if s in m_df.index else 0.0 for s in statuses]
+            offset = (m_idx - (n_models - 1) / 2.0) * bar_width
+            ax.bar(
+                x_pos + offset, vals, width=bar_width,
+                color=COLORS.get(m_name, "#333333"), edgecolor="white", linewidth=0.5,
+                label=m_name
+            )
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(statuses)
+        ax.set_xlabel("Diabetic Status")
+        if h_idx == 0:
+            ax.set_ylabel("Median RMSE (mg/dL)")
+        ax.set_title(f"Horizon: {h_val} hr")
+        ax.grid(axis="y", linestyle="--", alpha=0.4)
+
     plt.suptitle("CGMacros: Predictive Accuracy across Patient Phenotypes", y=1.05, fontsize=GlobalValues.plot_params.get("figure.titlesize", 22))
-    
+    plt.tight_layout()
     out_file = Path(out_dir) / "subgroup_rmse.pdf"
     plt.savefig(out_file, dpi=300, bbox_inches="tight")
     plt.close()
@@ -98,7 +114,7 @@ def plot_subgroup_rmse(rmse_path, out_dir):
 def load_cgmacros_ceg():
     import glob
     import re
-    files = glob.glob("../cgmacros/h-*/context-*/ceg.csv")
+    files = glob.glob("./Outputs/cgmacros/h-*/context-*/ceg.csv") or glob.glob("../cgmacros/h-*/context-*/ceg.csv")
     dfs = []
     for f in files:
         m = re.match(r".*/h-([^/]+?)hr/context-([^/]+?)hr/ceg\.csv", f)
@@ -149,27 +165,42 @@ def plot_subgroup_ceg(out_dir):
     model_order = [m for m in model_order if m in agg["model"].unique()]
     palette = [COLORS.get(m, "#333333") for m in model_order]
     
-    # Create plot
+    # Create plot using matplotlib
     plt.rcParams.update(GlobalValues.plot_params)
-    sns.set_style("whitegrid")
+    statuses = ["non-T2D", "pre-T2D", "T2D"]
+    horizons = ["0.5", "2", "5"]
+    fig, axes = plt.subplots(1, len(horizons), figsize=(15, 5), sharey=False)
+    n_models = len(model_order)
+    bar_width = 0.8 / max(n_models, 1)
+    x_pos = np.arange(len(statuses))
 
-    g = sns.catplot(
-        data=agg, x="status", y="A+B_pct", hue="model", col="horizon", 
-        kind="bar", palette=palette, hue_order=model_order,
-        height=5, aspect=0.9, sharey=False, edgecolor="white", linewidth=0.5,
-        legend=False
-    )
-    g.set_axis_labels("Diabetic Status", "Zone A+B (%)")
-    g.set_titles("Horizon: {col_name} hr")
-    
-    g.add_legend(title="Model", bbox_to_anchor=(1.05, 0.5), loc="center left")
-    
-    # Set consistent y-limits for CEG to allow easy visual comparison across horizons
-    for ax in g.axes.flat:
+    for h_idx, h_val in enumerate(horizons):
+        ax = axes[h_idx]
+        h_df = agg[agg["horizon"] == h_val]
+        for m_idx, m_name in enumerate(model_order):
+            m_df = h_df[h_df["model"] == m_name].set_index("status")
+            vals = [m_df.loc[s, "A+B_pct"] if s in m_df.index else 0.0 for s in statuses]
+            offset = (m_idx - (n_models - 1) / 2.0) * bar_width
+            ax.bar(
+                x_pos + offset, vals, width=bar_width,
+                color=COLORS.get(m_name, "#333333"), edgecolor="white", linewidth=0.5,
+                label=m_name
+            )
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(statuses)
+        ax.set_xlabel("Diabetic Status")
+        if h_idx == 0:
+            ax.set_ylabel("Zone A+B (%)")
+        ax.set_title(f"Horizon: {h_val} hr")
         ax.set_ylim(90, 100)
-            
+        ax.grid(axis="y", linestyle="--", alpha=0.4)
+
+    handles, labels = axes[-1].get_legend_handles_labels()
+    if handles:
+        axes[-1].legend(handles, labels, title="Model", bbox_to_anchor=(1.05, 0.5), loc="center left")
+
     plt.suptitle("CGMacros: Clinical Safety across Patient Phenotypes", y=1.05, fontsize=GlobalValues.plot_params.get("figure.titlesize", 22))
-    
+    plt.tight_layout()
     out_file = Path(out_dir) / "subgroup_ceg.pdf"
     plt.savefig(out_file, dpi=300, bbox_inches="tight")
     plt.close()

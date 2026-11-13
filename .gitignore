@@ -58,6 +58,7 @@ weinstock/
 # Results files
 rmse.csv
 maxae.csv
+full_ceg.csv
 volatility_results.csv
 output_timings.csv
 

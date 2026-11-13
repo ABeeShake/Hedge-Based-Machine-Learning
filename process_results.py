@@ -577,14 +577,27 @@ def main():
     rmse_accum = {}
     maxae_accum = {}
     ceg_counts = []
+    ceg_actual_all = []
+    ceg_pred_all = []
     
     regrets_padded_arrays = []
     max_len = 0
     max_col = 0
     cols_order = None
     
-    main_dir = os.path.relpath(os.path.join(data_dir, os.pardir))
-    dataset_name = os.path.basename(main_dir)
+    norm_data_dir = os.path.normpath(data_dir)
+    if os.path.basename(norm_data_dir) == "data":
+        main_dir = os.path.dirname(norm_data_dir)
+        dataset_name = os.path.basename(main_dir)
+    else:
+        dataset_name = os.path.basename(norm_data_dir)
+        cand_main = os.path.dirname(os.path.dirname(os.path.normpath(args.output_dir)))
+        main_dir = cand_main if os.path.exists(cand_main) else "."
+    if dataset_name not in ("weinstock", "cgmacros"):
+        for ds_cand in ("weinstock", "cgmacros"):
+            if ds_cand in args.output_dir.lower() or ds_cand in data_dir.lower():
+                dataset_name = ds_cand
+                break
     try:
         horizon = re.findall(r"\w+-([^/]+?)hr/", args.output_dir)[0]
         context = re.findall(r"context-(\S+)hr", args.output_dir)[0]
@@ -879,6 +892,9 @@ def main():
                 if len(a_sliced) > 0 and len(p_sliced) > 0:
                     ceg_dict = viz.clarke_error_grid(a_sliced, p_sliced, return_dict=True, plot=False)
                     ceg_counts.append({"id": str(id_num), "model": model_name} | ceg_dict)
+                    if model_name == args.hedge_version:
+                        ceg_actual_all.append(a_sliced)
+                        ceg_pred_all.append(p_sliced)
 
     # --- Finalize RMSE ---
     rmse_df = pd.DataFrame.from_dict(rmse_accum, orient="index")
@@ -898,6 +914,10 @@ def main():
     rmse_long["eta"] = args.eta
     rmse_long["dataset"] = dataset_name
     
+    # Save per-condition rmse.csv first (race-free in parallel runs)
+    cond_rmse_path = os.path.join(args.output_dir, "rmse.csv")
+    utils.save_data(rmse_long, path=cond_rmse_path, mode="w", header=True)
+
     rmse_path = os.path.join(main_dir, "rmse.csv")
     if not os.path.exists(rmse_path):
         utils.save_data(rmse_long, path=rmse_path, mode="w", header=True)
@@ -905,8 +925,12 @@ def main():
         utils.save_data(rmse_long, path=rmse_path, mode="a", header=False)
     
     # Deduplicate RMSE
-    _rmse_tmp = pd.read_csv(rmse_path, on_bad_lines="skip")
-    _rmse_tmp.drop_duplicates(subset=["horizon","context","eta","model","id"], keep="last").to_csv(rmse_path, index=False)
+    try:
+        _rmse_tmp = pd.read_csv(rmse_path, on_bad_lines="skip")
+        _dedup_cols = [c for c in ["dataset","horizon","context","eta","model","id"] if c in _rmse_tmp.columns]
+        _rmse_tmp.drop_duplicates(subset=_dedup_cols, keep="last").to_csv(rmse_path, index=False)
+    except Exception:
+        pass
 
     # --- Finalize Max-AE ---
     maxae_df = pd.DataFrame.from_dict(maxae_accum, orient="index")
@@ -923,6 +947,10 @@ def main():
     maxae_long["eta"] = args.eta
     maxae_long["dataset"] = dataset_name
     
+    # Save per-condition maxae.csv first (race-free in parallel runs)
+    cond_maxae_path = os.path.join(args.output_dir, "maxae.csv")
+    utils.save_data(maxae_long, path=cond_maxae_path, mode="w", header=True)
+
     maxae_path = os.path.join(main_dir, "maxae.csv")
     if not os.path.exists(maxae_path):
         utils.save_data(maxae_long, path=maxae_path, mode="w", header=True)
@@ -930,8 +958,12 @@ def main():
         utils.save_data(maxae_long, path=maxae_path, mode="a", header=False)
     
     # Deduplicate Max-AE
-    _maxae_tmp = pd.read_csv(maxae_path, on_bad_lines="skip")
-    _maxae_tmp.drop_duplicates(subset=["horizon","context","eta","model","id"], keep="last").to_csv(maxae_path, index=False)
+    try:
+        _maxae_tmp = pd.read_csv(maxae_path, on_bad_lines="skip")
+        _dedup_cols = [c for c in ["dataset","horizon","context","eta","model","id"] if c in _maxae_tmp.columns]
+        _maxae_tmp.drop_duplicates(subset=_dedup_cols, keep="last").to_csv(maxae_path, index=False)
+    except Exception:
+        pass
     
     # --- Finalize Regrets ---
     padded_ar_list = []
@@ -1002,6 +1034,20 @@ def main():
         _ceg_tmp = pd.read_csv(ceg_path, on_bad_lines="skip")
         _ceg_tmp.drop_duplicates(subset=["id","horizon","context","eta","model"], keep="last").to_csv(ceg_path, index=False)
 
+        if ceg_actual_all and ceg_pred_all:
+            try:
+                all_a = np.concatenate(ceg_actual_all)
+                all_p = np.concatenate(ceg_pred_all)
+                viz.clarke_error_grid(
+                    all_a, all_p,
+                    show=False,
+                    title=make_plot_title(dataset_name, horizon),
+                    save_file=os.path.join(images_dir, "clarke_grid_average_regrets.pdf"),
+                )
+                plt.close("all")
+            except Exception as e:
+                print(f"Warning: could not save clarke_grid_average_regrets.pdf: {e}")
+
     print("Generating latex macros...")
     generate_macros()
 
@@ -1027,11 +1073,11 @@ def plot_moe_regrets(avgrdict, q5rdict, q95rdict, omit = [], start=100, end=-100
         Y = (avg_r_dict[key][start:end]/T)
         if key.startswith("HBML"):
             label = pattern.sub(lambda m: rep[re.escape(m.group(0))], key)
-            col = GlobalValues.color_params["HBML"]
-            ls = GlobalValues.linestyle_params[key]
+            col = GlobalValues.color_params.get("HBML", "#d62728")
+            ls = GlobalValues.linestyle_params.get(key, "-")
         else:
             label = key
-            col = GlobalValues.color_params[key]
+            col = GlobalValues.color_params.get(key, "#333333")
             ls = "-"
         alpha = 1 if key.startswith("HBML") else 0.7
         plt.plot(
@@ -1106,11 +1152,11 @@ def plot_zoomed_regrets(avgrdict, q5rdict, q95rdict, omit = [], start=100, end=-
         
         if key.startswith("HBML"):
             ymax = max(Y.max(),ymax)
-            col = GlobalValues.color_params["HBML"]
-            ls = GlobalValues.linestyle_params[key]
+            col = GlobalValues.color_params.get("HBML", "#d62728")
+            ls = GlobalValues.linestyle_params.get(key, "-")
             alpha = 1
         else:
-            col = GlobalValues.color_params[key]
+            col = GlobalValues.color_params.get(key, "#333333")
             ls = "-"
             alpha = 0.7
             

@@ -51,8 +51,9 @@ if __name__ == "__main__":
     )
     args = _parser.parse_args()
 
-    # Determine Overleaf paths (supports running from root or subfolder)
+    # Determine Overleaf and Outputs paths (supports running from root or subfolder)
     OVERLEAF_DIR = "overleaf" if os.path.exists("overleaf") else "../overleaf"
+    OUTPUTS_ROOT = "Outputs" if os.path.exists("Outputs") else ".."
     TABLES_DIR = os.path.join(OVERLEAF_DIR, "tables")
     IMAGES_DIR = os.path.join(OVERLEAF_DIR, "images")
     os.makedirs(TABLES_DIR, exist_ok=True)
@@ -61,9 +62,9 @@ if __name__ == "__main__":
     # Post Processing
     ## find corrupted IDs for Weinstock
     print("Finding corrupted IDs for Weinstock...")
-    all_files = glob("../weinstock/**/*_forecasts.csv", recursive = True)
-    corrupted_paths = [file for file in all_files if re.search(r"^[0\.,]+$", getline(file, 23))]
-    corrupted_files = [re.findall(r"../(.*)/h-(.{1,4})hr/context-(.{1,4})hr/.*/(\d{3})", file)[0] for file in corrupted_paths]
+    all_files = glob(f"{OUTPUTS_ROOT}/weinstock/**/*_forecasts.csv", recursive = True)
+    corrupted_paths = [file for file in all_files if re.search(r"^[0\.,]+$", getline(file, 123))]
+    corrupted_files = [re.findall(r"(?:Outputs|\.\.)/(weinstock)/h-(.{1,4})hr/context-(.{1,4})hr/.*/(\d{3})", file)[0] for file in corrupted_paths if re.findall(r"(?:Outputs|\.\.)/(weinstock)/h-(.{1,4})hr/context-(.{1,4})hr/.*/(\d{3})", file)]
     comparison_cols = ["dataset","horizon","context","id"]
     corrupted_df = pd.DataFrame(corrupted_files, columns = comparison_cols)
     print(corrupted_df)
@@ -101,13 +102,18 @@ if __name__ == "__main__":
     rmse.id = rmse.id.astype(str).str.pad(width=3,side="left",fillchar="0")
 
     min_idx = rmse.groupby(["dataset","horizon","context","model","id"])["rmse"].idxmin()
-    min_rmse = rmse.loc[min_idx].drop(["eta"],axis=1)
-    na_idx = min_rmse.loc[min_rmse.rmse.isna(),"id"]
-    min_rmse = min_rmse.loc[np.logical_not(min_rmse.id.isin(na_idx))]
-    min_rmse = min_rmse.loc[np.logical_not(min_rmse.model.isin(["HBML (c)","HBML (d)"])),:]    
+    min_rmse_all = rmse.loc[min_idx].drop(["eta"],axis=1).copy()
+    na_idx = min_rmse_all.loc[min_rmse_all.rmse.isna(),"id"]
+    min_rmse_all = min_rmse_all.loc[np.logical_not(min_rmse_all.id.isin(na_idx))]
+    min_rmse_all.loc[min_rmse_all.horizon == "half","horizon"] = "0.5"
+
+    # Keep only the 5 base experts + primary HBML (HBML-SFHDF) for main paper tables
+    min_rmse = min_rmse_all.loc[
+        ~min_rmse_all.model.isin(["HBML (c)", "HBML (d)", "HBML (fd)", "HBML-SFH", "HBML-SFH-SD", "HBML-SFH-Meta"])
+    ].copy()
     # Remap both old and new HBML primary-model names to the canonical "HBML" label
     min_rmse.loc[min_rmse.model == "HBML-SFHDF", "model"] = "HBML"
-    min_rmse.loc[min_rmse.horizon == "half","horizon"] = "0.5"
+    min_rmse = min_rmse.drop_duplicates(subset=["dataset","horizon","context","model","id"], keep="last")
 
     cleaned_rmse = min_rmse
 
@@ -268,16 +274,19 @@ if __name__ == "__main__":
         maxae.id = maxae.id.astype(str).str.pad(width=3, side="left", fillchar="0")
         
         # Keep only the optimal base models/HBML like in RMSE block
-        min_maxae = maxae.loc[np.logical_not(maxae.model.isin(["HBML (c)","HBML (d)"])),:]
+        min_maxae = maxae.loc[
+            ~maxae.model.isin(["HBML (c)", "HBML (d)", "HBML (fd)", "HBML-SFH", "HBML-SFH-SD", "HBML-SFH-Meta"])
+        ].copy()
         # Remap both old and new HBML primary-model names to the canonical "HBML" label
-        min_maxae.loc[min_maxae.model.isin(["HBML (fd)", "HBML-SFHDF"]), "model"] = "HBML"
+        min_maxae.loc[min_maxae.model == "HBML-SFHDF", "model"] = "HBML"
         min_maxae.loc[min_maxae.horizon == "half", "horizon"] = "0.5"
-        
+        min_maxae = min_maxae.drop_duplicates(subset=["dataset","horizon","context","model","id"], keep="last")
+
         _maxae_stats = min_maxae.groupby(["dataset","horizon","context","model"]).maxae.apply(
             lambda x: pd.Series(
-                {"median": np.round(x.median(), 2),
-                 "iqr":    np.round(x.quantile(0.75) - x.quantile(0.25), 2)},
-                index=["median", "iqr"]
+                {_stat_col: np.round((x.median() if args.median else x.mean()), 2),
+                 _disp_col: np.round((x.quantile(0.75) - x.quantile(0.25) if args.median else x.std(ddof=0)), 2)},
+                index=[_stat_col, _disp_col]
             )
         ).reset_index().pivot(
             index=["dataset","horizon","context","model"],
@@ -323,7 +332,7 @@ if __name__ == "__main__":
     # fall back to a tab10 cycle for any model not in color_params).
     # All models whose name starts with "HBML" share the single "HBML" palette entry.
     _all_models = sorted(cleaned_rmse["model"].unique(), key=lambda m: model_order.get(m, 99))
-    _cmap = plt.cm.get_cmap("tab10")
+    _cmap = plt.get_cmap("tab10")
     _model_colors = {}
     _ci = 0
     for _m in _all_models:
@@ -513,14 +522,57 @@ if __name__ == "__main__":
 
     print("Individual RMSE Contribution Analysis complete.")
 
+    # CGMacros Diabetic Status RMSE Analysis (runs for both mean and --median)
+    print("Running CGMacros Diabetic Status RMSE Analysis...")
+    diab_order = {"T2D":0, "pre-T2D":1, "non-T2D":2}
+    diabetic_map = {}
+    for status, key in [("T2D", "diabetic_ids"), ("pre-T2D", "prediabetic_ids"), ("non-T2D", "nondiabetic_ids")]:
+        for pat_id in GlobalValues.CGMacros.get(key, []):
+            diabetic_map[pat_id] = status
+
+    def get_diabetic_status(patient_id):
+        return diabetic_map.get(str(patient_id).zfill(3), "Unknown")
+
+    cgmacros_rmse = min_rmse[min_rmse.dataset == "cgmacros"].copy()
+    cgmacros_rmse.loc[:, "status"] = cgmacros_rmse["id"].apply(get_diabetic_status)
+
+    diab_rmse = cgmacros_rmse.groupby(["status", "horizon", "context", "model"]).rmse.apply(
+        lambda x: pd.Series(
+            {_stat_col: np.round((x.median() if args.median else x.mean()), 2),
+             _disp_col: np.round((x.quantile(0.75)-x.quantile(0.25) if args.median else x.std(ddof=0)), 2)},
+            index=[_stat_col, _disp_col]
+        )
+    )
+    diab_rmse = diab_rmse.reset_index().pivot(index=["status", "horizon", "context", "model"], columns=["level_4"], values="rmse").reset_index()
+    diab_rmse = diab_rmse.groupby(["status", "horizon", "context"], group_keys=False).apply(format_rmse)
+
+    diab_pivot = diab_rmse.pivot(index=["horizon", "model", "status"], columns=["context"], values=[_s_col, _d_col])
+    diab_pivot = diab_pivot.sort_values(by=["status", "horizon", "model"], key=lambda x: x.map(diab_order | horizon_order | model_order)).reset_index()
+    diab_pivot.columns = diab_pivot.columns.map(_flatten_col)
+    _d_other = [c for c in diab_pivot.columns if not c.startswith(_stat_col + ".") and not c.startswith(_disp_col + ".")]
+    _d_stat  = [c for c in diab_pivot.columns if c.startswith(_stat_col + ".")]
+    _d_disp  = [c for c in diab_pivot.columns if c.startswith(_disp_col + ".")]
+    diab_pivot = diab_pivot[_d_other + _d_stat + _d_disp]
+
+    for status in ["T2D", "pre-T2D", "non-T2D"]:
+        subset = diab_pivot[diab_pivot["status"] == status].copy()
+        if not subset.empty:
+            subset["h_freq"] = subset.groupby('horizon')['horizon'].transform('count')
+            subset["htab"] = np.where(subset.horizon.shift() == subset.horizon, "", "\\multirow[t]{"+subset['h_freq'].astype(str)+"}{*}{"+subset['horizon'].astype(str)+"}")
+            subset["endings"] = np.where(subset["htab"].shift(-1) != "", "\\\\\\cmidrule{1-6}", "\\\\\\")
+            if len(subset) > 0:
+                subset.iloc[-1, subset.columns.get_loc("endings")] = "\\\\\\"
+            subset.to_csv(os.path.join(TABLES_DIR, f"rmse_{_stat_col}_cgmacros_{status}.csv"), index=False)
+            print(f"Saved Diabetic RMSE table ({_stat_col}) for {status}.")
+
     if not args.rmse_only:
         # Build full_ceg.csv from individual per-run ceg.csv files
         print("Building full_ceg.csv from individual ceg.csv files...")
-        ceg_pattern = re.compile(r"\.\./([\\w-]+)/h-([^/]+?)hr/context-([^/]+?)hr/ceg\.csv")
-        ceg_files = glob("../*/*/context-*/ceg.csv")
+        ceg_pattern = re.compile(r"(?:Outputs|\.\.)/([\w-]+)/h-([^/]+?)hr/context-([^/]+?)hr/ceg\.csv")
+        ceg_files = glob(f"{OUTPUTS_ROOT}/*/*/context-*/ceg.csv")
         ceg_parts = []
         for path in ceg_files:
-            m = ceg_pattern.match(path)
+            m = ceg_pattern.search(path)
             if not m:
                 continue
             dataset_key, horizon_key, context_key = m.group(1), m.group(2), m.group(3)
@@ -547,70 +599,57 @@ if __name__ == "__main__":
             df["dataset"] = dataset_key
             df["context"] = context_key
             ceg_parts.append(df)
+        full_ceg_path = "full_ceg.csv" if os.path.exists("Outputs") else "../full_ceg.csv"
         if ceg_parts:
             full_ceg = pd.concat(ceg_parts, ignore_index=True)
             bad_rows = full_ceg["horizon"].str.contains(r"[/]", regex=True, na=False)
             if bad_rows.any():
                 print(f"  Dropping {bad_rows.sum()} remaining malformed horizon rows from full_ceg")
                 full_ceg = full_ceg[~bad_rows]
-            full_ceg.to_csv("../full_ceg.csv", index=False)
-            print(f"  Written ../full_ceg.csv with {len(full_ceg)} rows from {len(ceg_parts)} files.")
+            full_ceg.to_csv(full_ceg_path, index=False)
+            print(f"  Written {full_ceg_path} with {len(full_ceg)} rows from {len(ceg_parts)} files.")
         else:
-            print("  Warning: no ceg.csv files found; ../full_ceg.csv not updated.")
+            print(f"  Warning: no ceg.csv files found; {full_ceg_path} not updated.")
 
         # Clarke Error Grid Analysis
         print("Running Clarke Error Grid Analysis...")
-        ceg = pd.read_csv("../full_ceg.csv")
-        ceg.id = ceg.id.astype(str).str.pad(width=3,side="left",fillchar="0")
-        ceg.loc[ceg.horizon == "half","horizon"] = "0.5"
-
-        if "model" in ceg.columns:
-            ceg = ceg.loc[~ceg.model.isin(["HBML (c)", "HBML (d)"])]
-            ceg.loc[ceg.model == "HBML-SFHDF", "model"] = "HBML"
-            setting_cols = ["dataset","horizon","context","model"]
-        else:
-            setting_cols = ["dataset","horizon","context"]
-
-        ceg["A+B"] = ceg.A + ceg.B
-        ceg["total"] = ceg.A + ceg.B + ceg.C + ceg.D1 + ceg.D2 + ceg.E1 + ceg.E2
-
-
+        ceg_raw = pd.read_csv(full_ceg_path)
+        ceg_raw.id = ceg_raw.id.astype(str).str.pad(width=3,side="left",fillchar="0")
+        ceg_raw.loc[ceg_raw.horizon == "half","horizon"] = "0.5"
+        ceg_raw["A+B"] = ceg_raw.A + ceg_raw.B
+        ceg_raw["total"] = ceg_raw.A + ceg_raw.B + ceg_raw.C + ceg_raw.D1 + ceg_raw.D2 + ceg_raw.E1 + ceg_raw.E2
         div_cols = ["A","B","C","D1","D2","E1","E2","A+B"]
         pct_cols = [col + "pct" for col in div_cols]
+        ceg_raw.loc[:,pct_cols] = 100*ceg_raw.loc[:,div_cols].div(ceg_raw.total,axis=0).values
+        ceg_raw = ceg_raw.loc[ceg_raw["A+Bpct"] > 50]
 
-        ceg.loc[:,pct_cols] = 100*ceg.loc[:,div_cols].div(ceg.total,axis=0).values
-        ceg = ceg.loc[ceg["A+Bpct"] > 50]
+        # Keep a copy with all models for HBML-only CEG comparison table
+        ceg_all_models = ceg_raw.copy()
+        if "model" in ceg_all_models.columns:
+            ceg_all_models = ceg_all_models.loc[~ceg_all_models.model.isin(["HBML (c)", "HBML (d)"])]
+            ceg_all_models.loc[ceg_all_models.model == "HBML (fd)", "model"] = "HBML"
+
+        # For main max_ceg.csv and diabetic CEG tables, filter strictly to primary HBML (HBML-SFHDF)
+        ceg = ceg_raw.copy()
+        if "model" in ceg.columns:
+            if "HBML-SFHDF" in ceg["model"].values:
+                ceg = ceg[ceg["model"] == "HBML-SFHDF"].copy()
+            elif "HBML" in ceg["model"].values:
+                ceg = ceg[ceg["model"] == "HBML"].copy()
+            ceg = ceg.drop(columns=["model"])
+        setting_cols = ["dataset","horizon","context"]
 
         max_ceg = ceg.loc[ceg.groupby(setting_cols + ["id"]).A.idxmax()].drop(["eta","id"],axis=1,errors='ignore').groupby(setting_cols).mean(numeric_only=True).reset_index()
-        max_ceg.loc[:,pct_cols + setting_cols] = np.round(max_ceg.loc[:,pct_cols + setting_cols],2)
+        max_ceg.loc[:,pct_cols] = np.round(max_ceg.loc[:,pct_cols],2)
 
-        max_ceg = max_ceg.sort_values(by=setting_cols, key=lambda x: x.map(dataset_order | horizon_order | context_order | model_order)).drop(div_cols + ["total"], axis=1, errors='ignore')
+        max_ceg = max_ceg.sort_values(by=setting_cols, key=lambda x: x.map(dataset_order | horizon_order | context_order)).drop(div_cols + ["total"], axis=1, errors='ignore')
         max_ceg["dataset"] = max_ceg["dataset"].map(dict(weinstock="Weinstock 2016", cgmacros="CGMacros"))
         max_ceg["d_freq"] = max_ceg.groupby('dataset')['dataset'].transform('count')
-        
-        if "model" in max_ceg.columns:
-            max_ceg["h_freq"] = max_ceg.groupby(['dataset','horizon'])['horizon'].transform('count')
-            max_ceg["c_freq"] = max_ceg.groupby(['dataset','horizon','context'])['context'].transform('count')
-            
-            max_ceg["htab"] = np.where(max_ceg.horizon.shift() == max_ceg.horizon, "", "\\multirow[t]{"+max_ceg['h_freq'].astype(str)+"}{*}{"+max_ceg['horizon'].astype(str)+"}")
-            max_ceg["dtab"] = np.where(max_ceg.dataset.shift() == max_ceg.dataset, "", "\\multirow[t]{"+max_ceg['d_freq'].astype(str)+"}{*}{"+max_ceg['dataset'].astype(str)+"}")
-            max_ceg["ctab"] = np.where(np.logical_and(max_ceg.context.shift() == max_ceg.context, max_ceg.horizon.shift() == max_ceg.horizon), "", "\\multirow[t]{"+max_ceg['c_freq'].astype(str)+"}{*}{"+max_ceg['context'].astype(str)+"}")
-            
-            max_ceg["endings"] = "\\\\"
-            mask_diff_context = max_ceg["ctab"].shift(-1) != ""
-            mask_same_dataset = max_ceg.dataset.shift(-1) == max_ceg.dataset
-            mask_same_horizon = max_ceg.horizon.shift(-1) == max_ceg.horizon
-            
-            max_ceg.loc[mask_diff_context & mask_same_horizon & mask_same_dataset, "endings"] = "\\\\\\cmidrule{3-12}"
-            max_ceg.loc[~mask_same_horizon & mask_same_dataset, "endings"] = "\\\\\\cmidrule{2-12}"
-            max_ceg.loc[~mask_same_dataset & max_ceg.dataset.shift(-1).notna(), "endings"] = "\\\\\\cmidrule{1-12}"
-            
-        else:
-            max_ceg["h_freq"] = max_ceg.groupby('horizon')['horizon'].transform('count')
-            max_ceg["htab"] = np.where(max_ceg.horizon.shift() == max_ceg.horizon, "", "\\multirow[t]{"+max_ceg['h_freq'].astype(str)+"}{*}{"+max_ceg['horizon'].astype(str)+"}")
-            max_ceg["dtab"] = np.where(max_ceg.dataset.shift() == max_ceg.dataset, "", "\\multirow[t]{"+max_ceg['d_freq'].astype(str)+"}{*}{"+max_ceg['dataset'].astype(str)+"}")
-            max_ceg["endings"] = np.where(np.logical_and(max_ceg["htab"].shift(-1) != "", max_ceg.dataset.shift(-1) == max_ceg.dataset), "\\\\\\cmidrule{2-9}","\\\\\\")
-            max_ceg["endings"] = np.where(np.logical_and(max_ceg.dataset.shift(-1) != max_ceg.dataset, max_ceg.dataset.shift(-1).notna()), "\\\\\\cmidrule{1-9}", max_ceg["endings"])
+        max_ceg["h_freq"] = max_ceg.groupby('horizon')['horizon'].transform('count')
+        max_ceg["htab"] = np.where(max_ceg.horizon.shift() == max_ceg.horizon, "", "\\multirow[t]{"+max_ceg['h_freq'].astype(str)+"}{*}{"+max_ceg['horizon'].astype(str)+"}")
+        max_ceg["dtab"] = np.where(max_ceg.dataset.shift() == max_ceg.dataset, "", "\\multirow[t]{"+max_ceg['d_freq'].astype(str)+"}{*}{"+max_ceg['dataset'].astype(str)+"}")
+        max_ceg["endings"] = np.where(np.logical_and(max_ceg["htab"].shift(-1) != "", max_ceg.dataset.shift(-1) == max_ceg.dataset), "\\\\\\cmidrule{2-9}","\\\\\\")
+        max_ceg["endings"] = np.where(np.logical_and(max_ceg.dataset.shift(-1) != max_ceg.dataset, max_ceg.dataset.shift(-1).notna()), "\\\\\\cmidrule{1-9}", max_ceg["endings"])
             
         max_ceg.to_csv(os.path.join(TABLES_DIR, "max_ceg.csv"), index=False)
         print("Saved original CEG table.")
@@ -630,9 +669,11 @@ if __name__ == "__main__":
             "HBML-AH":           "HBML-AH",   # AdaHedge
             "HBML-SFH":          "HBML-SFH",  # Scale-Free Hedge
             "HBML-SFHDF":        "HBML-SFHDF", # Scale-Free Hedge with Decay Forgetting
+            "HBML-SFH-SD":       "HBML-SFH-SD",
+            "HBML-SFH-Meta":     "HBML-SFH-Meta",
         }
-        if "model" in ceg.columns:
-            hbml_ceg = ceg[ceg["model"].isin(_HBML_ABBREV.keys())].copy()
+        if "model" in ceg_all_models.columns:
+            hbml_ceg = ceg_all_models[ceg_all_models["model"].isin(_HBML_ABBREV.keys())].copy()
             hbml_ceg["model"] = hbml_ceg["model"].map(_HBML_ABBREV)
             hbml_setting_cols = ["dataset", "horizon", "context", "model"]
 
@@ -685,49 +726,8 @@ if __name__ == "__main__":
         else:
             print("  Skipping HBML CEG comparison: 'model' column not found in full_ceg.csv")
 
-        # CGMacros Diabetic Status Analysis
-        print("Running CGMacros Diabetic Status Analysis...")
-        diab_order = {"T2D":0, "pre-T2D":1, "non-T2D":2}
-        diabetic_map = {}
-        for status, key in [("T2D", "diabetic_ids"), ("pre-T2D", "prediabetic_ids"), ("non-T2D", "nondiabetic_ids")]:
-            for pat_id in GlobalValues.CGMacros.get(key, []):
-                diabetic_map[pat_id] = status
-
-        def get_diabetic_status(patient_id):
-            return diabetic_map.get(str(patient_id).zfill(3), "Unknown")
-
-        cgmacros_rmse = min_rmse[min_rmse.dataset == "cgmacros"].copy()
-        cgmacros_rmse.loc[:, "status"] = cgmacros_rmse["id"].apply(get_diabetic_status)
-
-        diab_rmse = cgmacros_rmse.groupby(["status", "horizon", "context", "model"]).rmse.apply(
-            lambda x: pd.Series(
-                {_stat_col: np.round((x.median() if args.median else x.mean()), 2),
-                 _disp_col: np.round((x.quantile(0.75)-x.quantile(0.25) if args.median else x.std(ddof=0)), 2)},
-                index=[_stat_col, _disp_col]
-            )
-        )
-        diab_rmse = diab_rmse.reset_index().pivot(index=["status", "horizon", "context", "model"], columns=["level_4"], values="rmse").reset_index()
-        diab_rmse = diab_rmse.groupby(["status", "horizon", "context"], group_keys=False).apply(format_rmse)
-
-        diab_pivot = diab_rmse.pivot(index=["horizon", "model", "status"], columns=["context"], values=[_s_col, _d_col])
-        diab_pivot = diab_pivot.sort_values(by=["status", "horizon", "model"], key=lambda x: x.map(diab_order | horizon_order | model_order)).reset_index()
-        diab_pivot.columns = diab_pivot.columns.map(_flatten_col)
-        _d_other = [c for c in diab_pivot.columns if not c.startswith(_stat_col + ".") and not c.startswith(_disp_col + ".")]
-        _d_stat  = [c for c in diab_pivot.columns if c.startswith(_stat_col + ".")]
-        _d_disp  = [c for c in diab_pivot.columns if c.startswith(_disp_col + ".")]
-        diab_pivot = diab_pivot[_d_other + _d_stat + _d_disp]
-
-        for status in ["T2D", "pre-T2D", "non-T2D"]:
-            subset = diab_pivot[diab_pivot["status"] == status].copy()
-            if not subset.empty:
-                subset["h_freq"] = subset.groupby('horizon')['horizon'].transform('count')
-                subset["htab"] = np.where(subset.horizon.shift() == subset.horizon, "", "\\multirow[t]{"+subset['h_freq'].astype(str)+"}{*}{"+subset['horizon'].astype(str)+"}")
-                subset["endings"] = np.where(subset["htab"].shift(-1) != "", "\\\\\\cmidrule{1-6}", "\\\\\\")
-                if len(subset) > 0:
-                    subset.iloc[-1, subset.columns.get_loc("endings")] = "\\\\\\"
-                subset.to_csv(os.path.join(TABLES_DIR, f"rmse_{_stat_col}_cgmacros_{status}.csv"), index=False)
-                print(f"Saved Diabetic RMSE table for {status}.")
-
+        # CGMacros Diabetic Status CEG Analysis
+        print("Running CGMacros Diabetic Status CEG Analysis...")
         cgmacros_ceg = ceg[ceg.dataset == "cgmacros"].copy()
         cgmacros_ceg.loc[:, "status"] = cgmacros_ceg["id"].apply(get_diabetic_status)
         
@@ -772,7 +772,7 @@ if __name__ == "__main__":
         omit_models = ["Autoformer"]
 
         for d,h,c,e in combinations:
-            files = list(set(glob(f"../{d}/h-{h}hr/context-{c}hr/regrets/*_fullregrets_eta{e}.csv")) - set(corrupted_paths))
+            files = list(set(glob(f"{OUTPUTS_ROOT}/{d}/h-{h}hr/context-{c}hr/regrets/*_fullregrets_eta{e}.csv")) - set(corrupted_paths))
             if not files:
                 continue
             shapes = [pd.read_csv(path).shape for path in files]
@@ -833,10 +833,11 @@ if __name__ == "__main__":
         # Weight Plot and other visualizations
         print("Running Extra Visualizations...")
         try:
-            targets = utils.load_results_from_csv("../weinstock/data/110.csv")
-            forecasts = utils.load_results_from_csv("../weinstock/h-5hr/context-fullhr/forecasts/110_forecasts.csv")
-            losses = utils.load_results_from_csv("../weinstock/h-5hr/context-fullhr/losses/110_losses.csv")
-            settings = utils.load_sim_settings("../weinstock/h-5hr/context-fullhr/settings/110.json")
+            w_data_dir = "./weinstock" if os.path.exists("./weinstock/110.csv") else "../weinstock/data"
+            targets = utils.load_results_from_csv(f"{w_data_dir}/110.csv")
+            forecasts = utils.load_results_from_csv(f"{OUTPUTS_ROOT}/weinstock/h-5hr/context-fullhr/forecasts/110_forecasts.csv")
+            losses = utils.load_results_from_csv(f"{OUTPUTS_ROOT}/weinstock/h-5hr/context-fullhr/losses/110_losses.csv")
+            settings = utils.load_sim_settings(f"{OUTPUTS_ROOT}/weinstock/h-5hr/context-fullhr/settings/110.json")
             # Weight plot using Scale-Free Hedge with Decay Forgetting (HBML-SFHDF)
             from ExpMethods.simulate import scale_free_hedge_df_forecast
             _,_, W = scale_free_hedge_df_forecast(
@@ -849,7 +850,7 @@ if __name__ == "__main__":
             
             # --- Rolling RMSE Plot ---
             try:
-                full_losses = pd.read_csv("../weinstock/h-5hr/context-fullhr/losses/110_fulllosses_advanced.csv")
+                full_losses = pd.read_csv(f"{OUTPUTS_ROOT}/weinstock/h-5hr/context-fullhr/losses/110_fulllosses_advanced.csv")
                 rolling_window = 144 # 12 hours * 12 (5-min intervals)
                 rolling_rmse = np.sqrt(full_losses.rolling(window=rolling_window).mean())
                 
@@ -875,8 +876,8 @@ if __name__ == "__main__":
                 
             clarke_dir = os.path.join(IMAGES_DIR, "clarke", "weinstock")
             os.makedirs(clarke_dir, exist_ok=True)
-            preds = pd.read_csv("../weinstock/h-halfhr/context-6hr/forecasts/103_fullforecasts_advanced.csv")["HBML-SFHDF"]
-            ref = pd.read_csv("../weinstock/data/103.csv")["Libre.GL"]
+            preds = pd.read_csv(f"{OUTPUTS_ROOT}/weinstock/h-halfhr/context-6hr/forecasts/103_fullforecasts_advanced.csv")["HBML-SFHDF"]
+            ref = pd.read_csv(f"{w_data_dir}/103.csv")["Libre.GL"]
             viz.clarke_error_grid(ref, preds, show=False,
                                   save_file=f"{clarke_dir}/h0p5_c6_sfhdf_103.pdf")
             print(f"  Saved CEG scatter → {clarke_dir}/h0p5_c6_sfhdf_103.pdf")

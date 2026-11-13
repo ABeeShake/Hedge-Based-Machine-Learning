@@ -14,7 +14,7 @@ import glob
 import numpy as np
 import pandas as pd
 import ExpMethods.simulate as sim
-from calculate_baselines import reconstruct_ground_truth
+import ExpMethods.utils as utils
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TABLES_DIR = os.path.join(BASE_DIR, "overleaf", "tables")
@@ -62,16 +62,22 @@ def run_gamma_sensitivity():
             if "HoltWinters" in ls_df.columns:
                 ls_df["ETS"] = ls_df["HoltWinters"]
                 
-            res = reconstruct_ground_truth(fc_df, ls_df)
-            if res is None:
+            t_path = os.path.join(BASE_DIR, ds, f"{pid}.csv")
+            s_path = os.path.join(dir_path, "settings", f"{pid}.json")
+            if not os.path.exists(t_path) or not os.path.exists(s_path):
                 continue
-            y_rec, mask = res
+            settings = utils.load_sim_settings(s_path)
+            t_df = pd.read_csv(t_path)
+            col = [c for c in t_df.columns if "gl" in c.lower() or "cgm" in c.lower() or "value" in c.lower()][0]
+            y_rec = t_df[col].values.astype(float)
+            n_pts = min(len(fc_df), len(y_rec))
+            y_rec = y_rec[:n_pts]
             
             models = [m for m in ["NODE", "ARIMA", "ETS", "XGBoost", "NHITS"] if m in fc_df.columns]
-            f_dict = {m: fc_df[m].values for m in models}
-            l_dict = {m: ls_df[m].values for m in models if m in ls_df.columns}
+            f_dict = {m: fc_df[m].values[:n_pts] for m in models}
+            l_dict = sim.get_online_losses(f_dict, y_rec, **settings)
             
-            patients.append((pid, f_dict, l_dict, y_rec, mask))
+            patients.append((pid, f_dict, l_dict, y_rec, settings))
             
         if not patients:
             continue
@@ -80,22 +86,17 @@ def run_gamma_sensitivity():
         
         for gamma in GAMMA_GRID:
             patient_rmses = []
-            for pid, f_dict, l_dict, y_rec, mask in patients:
+            for pid, f_dict, l_dict, y_rec, settings in patients:
                 # Run SFH-DF
-                exp_f, exp_l = sim.scale_free_hedge_df_forecast(
+                _, exp_l = sim.scale_free_hedge_df_forecast(
                     f_dict, l_dict, gamma=gamma,
                     save_weights=False, forecast_type="mean",
-                    targets=y_rec, horizon=h_steps, start=100, end=len(y_rec) - 10
+                    targets=y_rec, **settings
                 )
-                
-                val_idx = np.arange(100, len(y_rec) - 10)
-                val_idx = val_idx[mask[val_idx]]
-                if len(val_idx) < 30:
+                valid_l = exp_l[100:-10]
+                if len(valid_l) < 30:
                     continue
-                    
-                pred = exp_f[val_idx]
-                target = y_rec[val_idx]
-                rmse = np.sqrt(np.mean((pred - target) ** 2))
+                rmse = np.sqrt(np.nanmean(valid_l))
                 patient_rmses.append(rmse)
                 
             mean_rmse = np.mean(patient_rmses) if patient_rmses else np.nan

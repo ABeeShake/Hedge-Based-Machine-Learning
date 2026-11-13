@@ -153,6 +153,12 @@ class GlobalValues:
         "HBML (c)": "--",
         "HBML (fd)": "-",
         "HBML": "-",
+        "HBML-SFH": "--",
+        "HBML-SFHDF": "-",
+        "HBML-SFH-SD": "-.",
+        "HBML-SFH-Meta": ":",
+        "HBML-VS": "--",
+        "HBML-AH": "-.",
     }
 
     plot_params = {
