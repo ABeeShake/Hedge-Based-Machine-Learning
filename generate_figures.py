@@ -49,7 +49,19 @@ if __name__ == "__main__":
         "--median", action="store_true",
         help="Use median and IQR instead of mean and SD for the RMSE table."
     )
+    _parser.add_argument(
+        "--exclude_hbml_rmse_above", type=float, default=None,
+        help="Sensitivity analysis only: drop participants whose HBML RMSE exceeds this value. "
+             "Off by default, because excluding on the outcome of the proposed method biases the comparison."
+    )
+    _parser.add_argument(
+        "--ceg_min_ab_pct", type=float, default=None,
+        help="Sensitivity analysis only: drop participant rows whose Clarke A+B share is at or below this value. "
+             "Off by default for the same reason."
+    )
     args = _parser.parse_args()
+    PRIMARY_HBML = GlobalValues.primary_hbml
+    _OTHER_HBML = [m for m in GlobalValues.hbml_variants if m != PRIMARY_HBML]
 
     # Determine Overleaf and Outputs paths (supports running from root or subfolder)
     OVERLEAF_DIR = "overleaf" if os.path.exists("overleaf") else "../overleaf"
@@ -101,52 +113,53 @@ if __name__ == "__main__":
     rmse = rmse.dropna(axis=0)
     rmse.id = rmse.id.astype(str).str.pad(width=3,side="left",fillchar="0")
 
-    min_idx = rmse.groupby(["dataset","horizon","context","model","id"])["rmse"].idxmin()
-    min_rmse_all = rmse.loc[min_idx].drop(["eta"],axis=1).copy()
+    # One row per (dataset, horizon, context, model, id). Earlier versions kept the *lowest*
+    # RMSE across eta runs, i.e. picked the best run per participant on the evaluation data.
+    # The reported aggregators do not use eta, so duplicates are stale rows: keep the newest.
+    _key = ["dataset","horizon","context","model","id"]
+    _n_dup = int(rmse.duplicated(subset=_key).sum())
+    if _n_dup:
+        print(f"  WARNING: {_n_dup} duplicate RMSE rows (several eta values or stale runs); keeping the most recent of each.")
+    min_rmse_all = rmse.drop_duplicates(subset=_key, keep="last").drop(["eta"],axis=1).copy()
     na_idx = min_rmse_all.loc[min_rmse_all.rmse.isna(),"id"]
     min_rmse_all = min_rmse_all.loc[np.logical_not(min_rmse_all.id.isin(na_idx))]
     min_rmse_all.loc[min_rmse_all.horizon == "half","horizon"] = "0.5"
 
     # Keep only the 5 base experts + primary HBML (HBML-SFHDF) for main paper tables
-    min_rmse = min_rmse_all.loc[
-        ~min_rmse_all.model.isin(["HBML (c)", "HBML (d)", "HBML (fd)", "HBML-SFH", "HBML-SFH-SD", "HBML-SFH-Meta"])
-    ].copy()
-    # Remap both old and new HBML primary-model names to the canonical "HBML" label
-    min_rmse.loc[min_rmse.model == "HBML-SFHDF", "model"] = "HBML"
+    if PRIMARY_HBML not in set(min_rmse_all.model):
+        raise SystemExit(f"Primary HBML model '{PRIMARY_HBML}' (ExpMethods/globals.py) is not in the RMSE files. "
+                         f"Re-run process_results.py --advanced_methods, or fix GlobalValues.primary_hbml.")
+    min_rmse = min_rmse_all.loc[~min_rmse_all.model.isin(_OTHER_HBML)].copy()
+    # The primary aggregator is reported under the canonical "HBML" label
+    min_rmse.loc[min_rmse.model == PRIMARY_HBML, "model"] = "HBML"
     min_rmse = min_rmse.drop_duplicates(subset=["dataset","horizon","context","model","id"], keep="last")
 
     cleaned_rmse = min_rmse
 
-    # Exclude individuals with abnormally high HBML RMSE within each
-    # (dataset, horizon, context) slab, using per-(horizon, context) thresholds.
-    # All models are dropped for flagged IDs so group sizes stay balanced.
-    # Keys are (horizon, context) string tuples; default fallback is 200.
-    _rmse_thresholds = {
-        ("0.5", "6"):    200, ("0.5", "12"): 200, ("0.5", "24"): 200, ("0.5", "full"): 200,
-        ("2",   "6"):    200, ("2",   "12"): 200, ("2",   "24"): 200, ("2",   "full"): 200,
-        ("5",   "6"):    200, ("5",   "12"): 200, ("5",   "24"): 200, ("5",   "full"): 200,
-    }
-    _hbml_rows = cleaned_rmse[cleaned_rmse["model"] == "HBML"].copy()
-    _hbml_rows["_threshold"] = _hbml_rows.apply(
-        lambda r: _rmse_thresholds.get((str(r["horizon"]), str(r["context"])), 200), axis=1
-    )
-    _flagged = _hbml_rows[_hbml_rows["rmse"] > _hbml_rows["_threshold"]]
-    _high_rmse_ids = _flagged.groupby(["dataset", "horizon", "context"])["id"].apply(set)
-    if not _high_rmse_ids.empty:
-        _keep = pd.Series(True, index=cleaned_rmse.index)
-        for (ds, h, ctx), bad_ids in _high_rmse_ids.items():
-            threshold = _rmse_thresholds.get((str(h), str(ctx)), 200)
-            _slab = (
-                (cleaned_rmse["dataset"] == ds) &
-                (cleaned_rmse["horizon"] == h) &
-                (cleaned_rmse["context"] == ctx) &
-                (cleaned_rmse["id"].isin(bad_ids))
-            )
-            _keep[_slab] = False
-            print(f"  Excluding {len(bad_ids)} individual(s) from {ds} h={h} ctx={ctx} "
-                  f"(HBML RMSE > {threshold}): {sorted(bad_ids)}")
-        cleaned_rmse = cleaned_rmse[_keep].copy()
-    print(f"  {cleaned_rmse['id'].nunique()} individuals retained after RMSE filter.")
+    # Optional sensitivity analysis: exclude individuals with very high HBML RMSE.
+    # OFF by default. All models are dropped for flagged IDs so groups stay balanced,
+    # and every exclusion is written to tables/rmse_exclusions.csv.
+    _excl_path = os.path.join(TABLES_DIR, "rmse_exclusions.csv")
+    _excl_cols = ["dataset", "horizon", "context", "id", "rmse", "threshold"]
+    if args.exclude_hbml_rmse_above is not None:
+        _thr = float(args.exclude_hbml_rmse_above)
+        _flagged = cleaned_rmse[(cleaned_rmse["model"] == "HBML") & (cleaned_rmse["rmse"] > _thr)]
+        _bad = set(zip(_flagged["dataset"], _flagged["horizon"], _flagged["context"], _flagged["id"]))
+        if _bad:
+            _is_bad = [k in _bad for k in zip(cleaned_rmse["dataset"], cleaned_rmse["horizon"],
+                                              cleaned_rmse["context"], cleaned_rmse["id"])]
+            cleaned_rmse = cleaned_rmse[~np.array(_is_bad)].copy()
+        _flagged.assign(threshold=_thr)[_excl_cols].to_csv(_excl_path, index=False)
+        print(f"  SENSITIVITY MODE: excluded {len(_bad)} participant-condition(s) with HBML RMSE > {_thr}.")
+    else:
+        pd.DataFrame(columns=_excl_cols).to_csv(_excl_path, index=False)
+    print(f"  {cleaned_rmse['id'].nunique()} individuals retained.")
+
+    # Raw participant-level RMSE: the single input of calculate_statistics.py and
+    # calculate_baselines.py (unrounded, exactly the rows summarised in the tables).
+    cleaned_rmse[["dataset", "horizon", "context", "id", "model", "rmse"]].to_csv(
+        os.path.join(TABLES_DIR, "rmse_participant.csv"), index=False)
+    print(f"Saved participant-level RMSE → {os.path.join(TABLES_DIR, 'rmse_participant.csv')}")
 
     # Compute both mean/SD and median/IQR stats; select based on --median flag.
     _rmse_mean_stats = cleaned_rmse.groupby(["dataset","horizon","context","model"]).rmse.apply(
@@ -274,11 +287,8 @@ if __name__ == "__main__":
         maxae.id = maxae.id.astype(str).str.pad(width=3, side="left", fillchar="0")
         
         # Keep only the optimal base models/HBML like in RMSE block
-        min_maxae = maxae.loc[
-            ~maxae.model.isin(["HBML (c)", "HBML (d)", "HBML (fd)", "HBML-SFH", "HBML-SFH-SD", "HBML-SFH-Meta"])
-        ].copy()
-        # Remap both old and new HBML primary-model names to the canonical "HBML" label
-        min_maxae.loc[min_maxae.model == "HBML-SFHDF", "model"] = "HBML"
+        min_maxae = maxae.loc[~maxae.model.isin(_OTHER_HBML)].copy()
+        min_maxae.loc[min_maxae.model == PRIMARY_HBML, "model"] = "HBML"
         min_maxae.loc[min_maxae.horizon == "half", "horizon"] = "0.5"
         min_maxae = min_maxae.drop_duplicates(subset=["dataset","horizon","context","model","id"], keep="last")
 
@@ -621,7 +631,10 @@ if __name__ == "__main__":
         div_cols = ["A","B","C","D1","D2","E1","E2","A+B"]
         pct_cols = [col + "pct" for col in div_cols]
         ceg_raw.loc[:,pct_cols] = 100*ceg_raw.loc[:,div_cols].div(ceg_raw.total,axis=0).values
-        ceg_raw = ceg_raw.loc[ceg_raw["A+Bpct"] > 50]
+        if args.ceg_min_ab_pct is not None:
+            _n0 = len(ceg_raw)
+            ceg_raw = ceg_raw.loc[ceg_raw["A+Bpct"] > float(args.ceg_min_ab_pct)]
+            print(f"  SENSITIVITY MODE: dropped {_n0 - len(ceg_raw)} Clarke rows with A+B <= {args.ceg_min_ab_pct}%.")
 
         # Keep a copy with all models for HBML-only CEG comparison table
         ceg_all_models = ceg_raw.copy()
@@ -632,11 +645,13 @@ if __name__ == "__main__":
         # For main max_ceg.csv and diabetic CEG tables, filter strictly to primary HBML (HBML-SFHDF)
         ceg = ceg_raw.copy()
         if "model" in ceg.columns:
-            if "HBML-SFHDF" in ceg["model"].values:
-                ceg = ceg[ceg["model"] == "HBML-SFHDF"].copy()
-            elif "HBML" in ceg["model"].values:
-                ceg = ceg[ceg["model"] == "HBML"].copy()
+            if PRIMARY_HBML not in ceg["model"].values:
+                raise SystemExit(f"Primary HBML model '{PRIMARY_HBML}' is not in full_ceg.csv; "
+                                 f"re-run process_results.py --advanced_methods --plot_ceg.")
+            ceg = ceg[ceg["model"] == PRIMARY_HBML].copy()
             ceg = ceg.drop(columns=["model"])
+        # One row per participant and setting: newest run wins (never "best of several runs").
+        ceg = ceg.drop_duplicates(subset=["dataset", "horizon", "context", "id"], keep="last")
         setting_cols = ["dataset","horizon","context"]
 
         max_ceg = ceg.loc[ceg.groupby(setting_cols + ["id"]).A.idxmax()].drop(["eta","id"],axis=1,errors='ignore').groupby(setting_cols).mean(numeric_only=True).reset_index()

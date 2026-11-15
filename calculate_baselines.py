@@ -1,292 +1,260 @@
 #!/usr/bin/env python3
-"""calculate_baselines.py — Evaluate Persistence and Uniform Ensemble Baselines.
+"""calculate_baselines.py -- naive comparators for HBML, computed from the raw forecasts.
 
-Computes essential comparator baselines requested during peer review:
-  1. Persistence Baseline: y_hat_{t+h} = y_t
-  2. Uniform Ensemble Average: y_hat_{t+h} = (1/K) sum_{k=1}^K f_{k,t+h}
-  3. Static Best Expert per cohort (from statistical_tests_best_expert.csv)
-  4. HBML ensemble forecast (from statistical_tests_best_expert.csv)
+Baselines (all causal, all evaluated on exactly the rows used for HBML):
+  persistence   y_hat(t+h) = y(t)
+  climatology   y_hat(t+h) = mean of y(0..t)            (running participant mean)
+  uniform       y_hat(t+h) = mean of the K expert forecasts
+HBML itself is re-aggregated here with ExpMethods/aggregators.py using the primary
+configuration named in ExpMethods/globals.py, so every method is scored on the same
+participants and time points.
 
-Ensures 100% mathematical and numerical consistency across:
-  - Table 2 (Empirical comparison of HBML against baselines)
-  - Table 3 (Main results table from rmse_pivot_mean.csv)
-  - Table 4 (Participant-level statistical tests)
-  - Table 5 (Median results table)
+Nothing in this file is hard-coded: a configuration whose forecasts are missing, or whose
+forecasts do not reproduce the HBML mean in rmse_pivot_mean.csv (stale copy), is written
+as NaN and shows up as a visible gap in the table and macros.
 
-Saves results to:
-  - overleaf/tables/baselines_comparison.csv
-  - overleaf/tables/table_baselines_comparison.tex
+Needs Outputs/<dataset>/h-*/context-*/forecasts and the raw glucose files, so run it on
+the machine that holds the simulation outputs (after generate_figures.py --rmse_only).
+
+Outputs: overleaf/tables/baselines_comparison.csv, baselines_participant.csv,
+         table_baselines_comparison.tex
 """
-
-import os
-import re
+import argparse
 import glob
+import math
+import os
+import sys
+
 import numpy as np
 import pandas as pd
-from scipy.stats import wilcoxon
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, BASE_DIR)
+from ExpMethods import aggregators as agg  # noqa: E402
+from ExpMethods.globals import GlobalValues  # noqa: E402
+
 TABLES_DIR = os.path.join(BASE_DIR, "overleaf", "tables")
 OUTPUTS_DIR = os.path.join(BASE_DIR, "Outputs")
-
 DATASETS = ["weinstock", "cgmacros"]
 HORIZONS = [0.5, 2.0, 5.0]
 CONTEXTS = ["6", "12", "24", "full"]
-
-HORIZON_MAP = {0.5: "0p5", 2.0: "2", 5.0: "5"}
-HORIZON_DIR_MAP = {0.5: "h-halfhr", 2.0: "h-2hr", 5.0: "h-5hr"}
+HORIZON_DIR = {0.5: "h-halfhr", 2.0: "h-2hr", 5.0: "h-5hr"}
 HORIZON_STEPS = {0.5: 6, 2.0: 24, 5.0: 60}
 DATASET_LABEL = {"weinstock": "Weinstock", "cgmacros": "CGMacros"}
 HORIZON_LABEL = {0.5: "0.5 hr", 2.0: "2 hr", 5.0: "5 hr"}
-MODELS = ["NODE", "ARIMA", "ETS", "XGBoost", "NHITS"]
+EXPERTS = ["NODE", "ARIMA", "ETS", "XGBoost", "NHITS"]
+START = 21
+EVAL = slice(100, -10)
+BASELINES = ["persistence", "climatology", "uniform"]
 
 
-def load_authoritative_stats():
-    """Load official participant-level HBML and Best Expert results from statistical_tests_best_expert.csv."""
-    path = os.path.join(TABLES_DIR, "statistical_tests_best_expert.csv")
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"Missing authoritative stats file: {path}")
-    df = pd.read_csv(path)
-    
-    stats_map = {}
-    for _, row in df.iterrows():
-        ds = str(row["dataset"]).strip().lower()
-        h = float(row["horizon"])
-        ctx = str(row["context"]).strip().lower()
-        key = (ds, h, ctx)
-        stats_map[key] = {
-            "n": int(row["n_participants"]),
-            "best_expert": str(row["expert"]),
-            "best_expert_rmse": float(row["expert_mean"]),
-            "hbml_rmse": float(row["hbml_mean"]),
-            "wilcoxon_p": float(row["wilcoxon_p"]) if pd.notna(row["wilcoxon_p"]) else np.nan,
-        }
-    return stats_map
+def _rmse(sq):
+    v = sq[EVAL]
+    return float(np.sqrt(np.nanmean(v))) if len(v) else np.nan
 
 
-CGMACROS_PERS_MAP = {
-    (0.5, "6"): 19.91, (0.5, "12"): 19.91, (0.5, "24"): 19.91, (0.5, "full"): 19.91,
-    (2.0, "6"): 38.16, (2.0, "12"): 37.97, (2.0, "24"): 37.97, (2.0, "full"): 37.97,
-    (5.0, "6"): 41.16, (5.0, "12"): 41.16, (5.0, "24"): 41.16, (5.0, "full"): 41.16,
-}
-CGMACROS_UNIF_MAP = {
-    (0.5, "6"): 16.25, (0.5, "12"): 15.51, (0.5, "24"): 13.74, (0.5, "full"): 15.72,
-    (2.0, "6"): 20.95, (2.0, "12"): 20.88, (2.0, "24"): 19.53, (2.0, "full"): 22.17,
-    (5.0, "6"): 40.23, (5.0, "12"): 30.22, (5.0, "24"): 27.65, (5.0, "full"): 35.26,
-}
+def wilcoxon_p(d):
+    d = np.asarray(d, dtype=float)
+    d = d[np.isfinite(d) & (d != 0)]
+    if len(d) < 6:
+        return np.nan
+    try:
+        from scipy.stats import wilcoxon
+        return float(wilcoxon(d).pvalue)
+    except Exception:  # SciPy missing: normal approximation with tie correction
+        a = pd.Series(np.abs(d))
+        r = a.rank().to_numpy()
+        n = len(d)
+        ties = a.value_counts().to_numpy()
+        var = n * (n + 1) * (2 * n + 1) / 24 - (ties ** 3 - ties).sum() / 48
+        z = (r[d > 0].sum() - n * (n + 1) / 4) / math.sqrt(var)
+        return float(math.erfc(abs(z) / math.sqrt(2)))
 
 
-def compute_dataset_baselines(ds):
-    """Compute empirical persistence and uniform ensemble RMSE for a dataset across all participants."""
-    baselines = {}
-    data_dir = os.path.join(OUTPUTS_DIR, ds, "data")
-    if not os.path.exists(data_dir):
-        data_dir = os.path.join(BASE_DIR, ds)
-    
-    for h_val in HORIZONS:
-        h_dir = HORIZON_DIR_MAP[h_val]
-        h_steps = HORIZON_STEPS[h_val]
-        h_code = HORIZON_MAP[h_val]
-        for ctx in CONTEXTS:
-            ctx_dir = f"context-{ctx}hr"
-            fc_dir = os.path.join(OUTPUTS_DIR, ds, h_dir, ctx_dir, "forecasts")
-            dev_path = os.path.join(TABLES_DIR, f"rmse_dev_{ds}_h{h_code}_c{ctx}.csv")
-            valid_ids = None
-            if os.path.exists(dev_path):
-                try:
-                    dev_df = pd.read_csv(dev_path)
-                    valid_ids = set(dev_df["id"].astype(str).str.zfill(3))
-                except Exception:
-                    valid_ids = None
-            
-            u_rmses = []
-            p_rmses = []
-            
-            if os.path.isdir(fc_dir):
-                for f_path in sorted(glob.glob(os.path.join(fc_dir, "*_forecasts.csv"))):
-                    pid = os.path.basename(f_path)[:3]
-                    if valid_ids is not None and pid not in valid_ids:
-                        continue
-                    t_path = os.path.join(data_dir, f"{pid}.csv")
-                    if not os.path.exists(t_path):
-                        continue
-                        
-                    fc_df = pd.read_csv(f_path)
-                    if "HoltWinters" in fc_df.columns and "ETS" not in fc_df.columns:
-                        fc_df["ETS"] = fc_df["HoltWinters"]
-                    t_df = pd.read_csv(t_path)
-                    
-                    col = [c for c in t_df.columns if "gl" in c.lower() or "cgm" in c.lower() or "value" in c.lower()][0]
-                    targets = t_df[col].values
-                    cols = [c for c in MODELS if c in fc_df.columns]
-                    
-                    n_pts = min(len(fc_df), len(targets))
-                    if n_pts < 120:
-                        continue
-                        
-                    y_true = targets[:n_pts]
-                    f_unif = fc_df[cols].iloc[:n_pts].mean(axis=1).values
-                    eval_idx = np.arange(100, n_pts - 10)
-                    
-                    u_rmse = np.sqrt(np.mean((f_unif[eval_idx] - y_true[eval_idx]) ** 2))
-                    u_rmses.append(u_rmse)
-                    
-                    valid_t = [t for t in eval_idx if t >= h_steps]
-                    p_pred = y_true[np.array(valid_t) - h_steps]
-                    p_t = y_true[valid_t]
-                    p_rmse = np.sqrt(np.mean((p_pred - p_t) ** 2))
-                    p_rmses.append(p_rmse)
-                
-            if len(u_rmses) > 0 and len(p_rmses) > 0:
-                baselines[(ds, h_val, ctx)] = {
-                    "uniform_rmse": float(np.mean(u_rmses)),
-                    "persistence_rmse": float(np.mean(p_rmses)),
-                }
-            elif ds == "cgmacros":
-                baselines[(ds, h_val, ctx)] = {
-                    "uniform_rmse": CGMACROS_UNIF_MAP.get((h_val, ctx), np.nan),
-                    "persistence_rmse": CGMACROS_PERS_MAP.get((h_val, ctx), np.nan),
-                }
-            else:
-                baselines[(ds, h_val, ctx)] = {
-                    "uniform_rmse": np.nan,
-                    "persistence_rmse": np.nan,
-                }
-    return baselines
+def load_targets(ds, pid):
+    for d in (os.path.join(BASE_DIR, ds), os.path.join(OUTPUTS_DIR, ds, "data")):
+        p = os.path.join(d, f"{pid}.csv")
+        if os.path.exists(p):
+            try:
+                df = pd.read_csv(p)
+            except OSError:
+                continue
+            return df["Libre.GL" if "Libre.GL" in df.columns else "Dexcom.GL"].to_numpy(dtype=float)
+    return None
 
 
-def evaluate_baselines():
-    stats_map = load_authoritative_stats()
-    all_baselines = {}
+def participant_ids(ds, h, ctx):
+    """IDs retained in the main tables for this configuration (None = no restriction available)."""
+    p = os.path.join(TABLES_DIR, "rmse_participant.csv")
+    if os.path.exists(p):
+        df = pd.read_csv(p, dtype={"id": str, "context": str, "horizon": str})
+        df["h"] = df["horizon"].map(lambda v: 0.5 if v in ("half", "0.5") else float(v))
+        sel = df[(df.dataset == ds) & (df.h == h) & (df.context == ctx)]
+        return set(sel["id"].str.zfill(3)) if len(sel) else None
+    p = os.path.join(TABLES_DIR, f"rmse_dev_{ds}_h{str(h).replace('.0','').replace('.','p')}_c{ctx}.csv")
+    if os.path.exists(p):
+        return set(pd.read_csv(p, dtype={"id": str})["id"].str.zfill(3))
+    return None
+
+
+def table_hbml_mean(ds, h, ctx):
+    p = os.path.join(TABLES_DIR, "rmse_pivot_mean.csv")
+    if not os.path.exists(p):
+        return np.nan
+    pv = pd.read_csv(p, dtype=str)
+    row = pv[(pv.dataset == ds) & (pv.model == "HBML") & (pv.horizon.astype(float) == h)]
+    if row.empty:
+        return np.nan
+    try:
+        return float(str(row.iloc[0][f"mean.{ctx}"]).replace("\\textbf{", "").replace("}", ""))
+    except (ValueError, KeyError):
+        return np.nan
+
+
+def _one_participant(task):
+    ds, h, ctx, f = task
+    steps = HORIZON_STEPS[h]
+    pid = os.path.basename(f)[:3]
+    y = load_targets(ds, pid)
+    try:
+        fdf = pd.read_csv(f)
+    except OSError:
+        return None
+    if y is None:
+        return None
+    if "HoltWinters" in fdf.columns and "ETS" not in fdf.columns:
+        fdf = fdf.rename(columns={"HoltWinters": "ETS"})
+    cols = [c for c in EXPERTS if c in fdf.columns]
+    if len(cols) < 2:
+        return None
+    f_mat = fdf[cols].to_numpy(dtype=float)
+    n = min(len(f_mat), len(y))
+    if n < 120 + steps:
+        return None
+    f_mat, y = f_mat[:n], y[:n]
+    l_mat = agg.online_losses(f_mat, y, START, steps)
+    _, hb = agg.run_named(GlobalValues.primary_hbml, f_mat, l_mat, y, start=START, horizon=steps)
+    pers = np.full(n, np.nan)
+    pers[steps:] = y[:-steps]
+    clim = np.full(n, np.nan)
+    clim[steps:] = (np.cumsum(y) / np.arange(1, n + 1))[:-steps]
+    rec = dict(dataset=ds, horizon=h, context=ctx, id=pid, hbml=_rmse(hb),
+               persistence=_rmse((pers - y) ** 2), climatology=_rmse((clim - y) ** 2),
+               uniform=_rmse((np.nanmean(f_mat, axis=1) - y) ** 2))
+    for i, c in enumerate(cols):
+        rec[c] = _rmse(l_mat[:, i])
+    return rec
+
+
+WORKERS = max(1, (os.cpu_count() or 2) - 1)
+
+
+def evaluate_condition(ds, h, ctx):
+    fc_dir = os.path.join(OUTPUTS_DIR, ds, HORIZON_DIR[h], f"context-{ctx}hr", "forecasts")
+    keep = participant_ids(ds, h, ctx)
+    tasks = []
+    for f in sorted(glob.glob(os.path.join(fc_dir, "*_forecasts.csv"))):
+        name = os.path.basename(f)
+        if name[3:] != "_forecasts.csv" or (keep is not None and name[:3] not in keep):
+            continue
+        tasks.append((ds, h, ctx, f))
+    if WORKERS > 1 and len(tasks) > 8:
+        from multiprocessing import Pool
+        with Pool(WORKERS) as pool:
+            res = pool.map(_one_participant, tasks, chunksize=4)
+    else:
+        res = [_one_participant(t) for t in tasks]
+    return pd.DataFrame([r for r in res if r is not None])
+
+
+def evaluate_baselines(allow_mismatch=False):
+    parts, records = [], []
     for ds in DATASETS:
-        all_baselines.update(compute_dataset_baselines(ds))
-    
-    # Fallback Weinstock persistence and uniform ensemble values if raw files are absent
-    weinstock_pers = {0.5: 31.37, 2.0: 74.23, 5.0: 126.50}
-    weinstock_unif = {
-        (0.5, "6"): 23.45, (0.5, "12"): 22.19, (0.5, "24"): 21.19, (0.5, "full"): 22.50,
-        (2.0, "6"): 31.04, (2.0, "12"): 27.47, (2.0, "24"): 32.34, (2.0, "full"): 32.29,
-        (5.0, "6"): 90.26, (5.0, "12"): 68.54, (5.0, "24"): 43.31, (5.0, "full"): 66.68,
-    }
-    
-    records = []
-    
-    for ds in DATASETS:
-        for h_val in HORIZONS:
+        for h in HORIZONS:
             for ctx in CONTEXTS:
-                key = (ds, h_val, ctx)
-                if key not in stats_map:
+                df = evaluate_condition(ds, h, ctx)
+                rec = dict(dataset=ds, horizon=h, context=ctx, n=len(df), status="ok")
+                ref = table_hbml_mean(ds, h, ctx)
+                if df.empty:
+                    rec["status"] = "no_forecasts"
+                elif not allow_mismatch and not np.isnan(ref) and abs(df["hbml"].mean() - ref) > 0.005 * ref:
+                    rec["status"] = "stale_forecasts"
+                    print(f"WARNING {ds} h={h} ctx={ctx}: HBML recomputed here = {df['hbml'].mean():.2f} but the main "
+                          f"table says {ref:.2f}. These forecasts are not the ones behind the tables; row left empty.")
+                if rec["status"] != "ok":
+                    if rec["status"] == "no_forecasts":
+                        print(f"WARNING {ds} h={h} ctx={ctx}: no forecast files found; row left empty.")
+                    for k in ["hbml_rmse", "best_expert_rmse"] + [f"{b}_rmse" for b in BASELINES]:
+                        rec[k] = np.nan
+                    rec["best_expert_name"] = ""
+                    records.append(rec)
                     continue
-                    
-                auth = stats_map[key]
-                n = auth["n"]
-                hbml_rmse = auth["hbml_rmse"]
-                best_exp_rmse = auth["best_expert_rmse"]
-                best_exp_name = auth["best_expert"]
-                
-                unif_rmse = all_baselines.get(key, {}).get("uniform_rmse", np.nan)
-                pers_rmse = all_baselines.get(key, {}).get("persistence_rmse", np.nan)
-                if np.isnan(unif_rmse) and ds == "weinstock":
-                    unif_rmse = weinstock_unif.get((h_val, ctx), np.nan)
-                if np.isnan(pers_rmse) and ds == "weinstock":
-                    pers_rmse = weinstock_pers.get(h_val, np.nan)
-                    
-                diff_unif = unif_rmse - hbml_rmse
-                unif_red = ((unif_rmse - hbml_rmse) / unif_rmse) * 100.0
-                pers_red = ((pers_rmse - hbml_rmse) / pers_rmse) * 100.0 if not np.isnan(pers_rmse) else np.nan
-                
-                record = {
-                    "dataset": ds,
-                    "horizon": h_val,
-                    "context": ctx,
-                    "n": n,
-                    "hbml_rmse": hbml_rmse,
-                    "uniform_rmse": unif_rmse,
-                    "persistence_rmse": pers_rmse,
-                    "best_expert_rmse": best_exp_rmse,
-                    "best_expert_name": best_exp_name,
-                    "diff_uniform": diff_unif,
-                    "pct_improved_vs_uniform": 100.0,
-                    "hbml_reduction_vs_uniform_pct": unif_red,
-                    "hbml_reduction_vs_persistence_pct": pers_red,
-                }
-                records.append(record)
-                print(f"{ds:9s} h={h_val:<3.1f} ctx={ctx:<4s} (n={n:<2d}): "
-                      f"Pers={pers_rmse:5.2f} | Unif={unif_rmse:5.2f} | "
-                      f"BestExp({best_exp_name})={best_exp_rmse:5.2f} | "
-                      f"HBML={hbml_rmse:5.2f} | GainVsUnif=+{unif_red:4.1f}%")
-
-    df_out = pd.DataFrame(records)
-    out_csv = os.path.join(TABLES_DIR, "baselines_comparison.csv")
-    df_out.to_csv(out_csv, index=False)
-    print(f"\nSaved baselines comparison to {out_csv}")
-    
-    tex_path = os.path.join(TABLES_DIR, "table_baselines_comparison.tex")
-    generate_latex_table(df_out, tex_path)
-    print(f"Saved LaTeX baselines table to {tex_path}")
+                parts.append(df)
+                experts = [c for c in EXPERTS if c in df.columns]
+                best = min(experts, key=lambda c: df[c].mean())
+                rec.update(hbml_rmse=df["hbml"].mean(), best_expert_name=best, best_expert_rmse=df[best].mean())
+                for b in BASELINES:
+                    d = df[b] - df["hbml"]  # positive = HBML better
+                    rec[f"{b}_rmse"] = df[b].mean()
+                    rec[f"hbml_reduction_vs_{b}_pct"] = 100.0 * (df[b].mean() - df["hbml"].mean()) / df[b].mean()
+                    rec[f"pct_improved_vs_{b}"] = 100.0 * float((d > 1e-3).mean())
+                    rec[f"wilcoxon_p_vs_{b}"] = wilcoxon_p(d.to_numpy())
+                records.append(rec)
+                print(f"{ds:9s} h={h:<3} ctx={ctx:<4s} n={len(df):<3d} persistence={rec['persistence_rmse']:6.2f} "
+                      f"climatology={rec['climatology_rmse']:6.2f} uniform={rec['uniform_rmse']:6.2f} "
+                      f"best({best})={rec['best_expert_rmse']:6.2f} HBML={rec['hbml_rmse']:6.2f}")
+    out = pd.DataFrame(records)
+    out.to_csv(os.path.join(TABLES_DIR, "baselines_comparison.csv"), index=False)
+    if parts:
+        pd.concat(parts, ignore_index=True).to_csv(os.path.join(TABLES_DIR, "baselines_participant.csv"), index=False)
+    generate_latex_table(out, os.path.join(TABLES_DIR, "table_baselines_comparison.tex"))
+    n_bad = int((out["status"] != "ok").sum())
+    print(f"Saved baselines for {len(out) - n_bad}/{len(out)} configurations"
+          + (f"; {n_bad} left empty (see warnings)." if n_bad else "."))
+    return out
 
 
 def generate_latex_table(df, output_tex):
-    lines = []
-    lines.append(r"\begin{table*}[t]")
-    lines.append(r"\centering")
-    lines.append(r"\small")
-    lines.append(r"\begin{tabular}{llcccccc}")
-    lines.append(r"\toprule")
-    lines.append(r"Dataset & Horizon & Context & Persistence & Uniform Ensemble & Static Best Expert & HBML & Gain vs. Uniform (\%) \\")
-    lines.append(r"\midrule")
-    
-    current_ds = None
-    for _, row in df.iterrows():
-        ds = DATASET_LABEL[row["dataset"]]
-        h = HORIZON_LABEL[row["horizon"]]
-        ctx = f"{row['context']} hr" if row["context"] != "full" else "Full"
-        
-        p_val = f"{row['persistence_rmse']:.2f}" if not pd.isna(row["persistence_rmse"]) else "---"
-        u_val = f"{row['uniform_rmse']:.2f}"
-        
-        # Format Best Expert and HBML, bolding the strictly lowest
-        b_num = row["best_expert_rmse"]
-        h_num = row["hbml_rmse"]
-        
-        if h_num < b_num:
-            b_val = f"{b_num:.2f}"
-            h_val = f"\\textbf{{{h_num:.2f}}}"
-        elif b_num < h_num:
-            b_val = f"\\textbf{{{b_num:.2f}}}"
-            h_val = f"{h_num:.2f}"
-        else:
-            b_val = f"{b_num:.2f}"
-            h_val = f"\\textbf{{{h_num:.2f}}}"
-            
-        if row['hbml_reduction_vs_uniform_pct'] >= 0:
-            red = f"+{row['hbml_reduction_vs_uniform_pct']:.1f}\\%"
-        else:
-            red = f"{row['hbml_reduction_vs_uniform_pct']:.1f}\\%"
-        
-        if current_ds is not None and current_ds != ds:
+    cols = ["persistence_rmse", "climatology_rmse", "uniform_rmse", "best_expert_rmse", "hbml_rmse"]
+    lines = [r"\begin{table*}[t]", r"\centering", r"\small", r"\begin{tabular}{lllcccccc}", r"\toprule",
+             r"Dataset & Horizon & Context & Persistence & Running mean & Uniform ensemble & Best expert & HBML & HBML vs.\ persistence (\%) \\",
+             r"\midrule"]
+    cur = None
+    for _, r in df.iterrows():
+        ds = DATASET_LABEL[r["dataset"]]
+        if cur is not None and cur != ds:
             lines.append(r"\midrule")
-        current_ds = ds
-        
-        line = f"{ds} & {h} & {ctx} & {p_val} & {u_val} & {b_val} & {h_val} & {red} \\\\"
-        lines.append(line)
-        
-    lines.append(r"\bottomrule")
-    lines.append(r"\end{tabular}")
-    lines.append(
-        r"\caption{\textbf{Empirical comparison of HBML against standard forecasting baselines across all 24 configurations.} "
-        r"Baselines include naive persistence ($\hat{y}_{t+h} = y_t$), an equally weighted uniform ensemble average "
-        r"($\hat{y}_{t+h} = \frac{1}{K}\sum_{k=1}^K \hat{f}_{k,t+h}$), and the static best constituent expert per cohort "
-        r"(matching Table~\ref{tab:statistical_tests} and Tables~\ref{tab:rmse_weinstock} and \ref{tab:rmse_cgmacros}). "
-        r"Values report mean participant RMSE (mg/dL). Relative gain denotes percentage error reduction achieved by HBML over uniform averaging. "
-        r"Bold indicates the superior performing model between HBML and the static best expert.}"
-    )
-    lines.append(r"\label{tab:baselines_comparison}")
-    lines.append(r"\end{table*}")
-    
+        cur = ds
+        vals = [r.get(c, np.nan) for c in cols]
+        if all(pd.isna(v) for v in vals):
+            cells = ["---"] * 5 + ["---"]
+        else:
+            lo = np.nanmin(vals)
+            cells = [("---" if pd.isna(v) else (f"\\textbf{{{v:.2f}}}" if abs(v - lo) < 5e-3 else f"{v:.2f}")) for v in vals]
+            red = r.get("hbml_reduction_vs_persistence_pct", np.nan)
+            cells.append("---" if pd.isna(red) else f"{red:+.1f}")
+        lines.append(f"{ds} & {HORIZON_LABEL[r['horizon']]} & {'Full' if r['context'] == 'full' else r['context'] + ' hr'} & "
+                     + " & ".join(cells) + r" \\")
+    lines += [r"\bottomrule", r"\end{tabular}",
+              r"\caption{\textbf{HBML compared with naive baselines.} Mean participant-level RMSE (mg/dL) for naive "
+              r"persistence ($\hat{y}_{t+h} = y_t$), the running participant mean ($\hat{y}_{t+h} = \bar{y}_{0:t}$), an "
+              r"equally weighted average of the five experts, the best constituent expert (lowest cohort mean RMSE), and "
+              r"HBML. All methods are scored on the same participants and time points. Bold marks the lowest value in "
+              r"each row. The last column is the relative RMSE change of HBML against persistence (positive: HBML lower). "
+              r"Dashes mark configurations that could not be evaluated.}",
+              r"\label{tab:baselines_comparison}", r"\end{table*}"]
     with open(output_tex, "w") as f:
         f.write("\n".join(lines) + "\n")
 
 
 if __name__ == "__main__":
-    evaluate_baselines()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--allow_mismatch", action="store_true",
+                    help="Keep rows even if the recomputed HBML mean differs from rmse_pivot_mean.csv.")
+    ap.add_argument("--tables_dir", default=None)
+    ap.add_argument("--workers", type=int, default=WORKERS)
+    a = ap.parse_args()
+    if a.tables_dir:
+        TABLES_DIR = a.tables_dir
+    WORKERS = a.workers
+    evaluate_baselines(a.allow_mismatch)

@@ -1,319 +1,289 @@
 #!/usr/bin/env python3
-"""calculate_statistics.py — Rigorous participant-level statistical evaluation.
+"""calculate_statistics.py -- participant-level paired comparisons of HBML with each expert.
 
-Calculates paired statistical tests comparing HBML against constituent experts
-across all 24 experimental configurations (dataset × horizon × context):
-  - Two-sided Wilcoxon signed-rank test (W statistic and p-value)
-  - Two-sided paired Student's t-test (t statistic, df, p-value)
-  - 95% bootstrap confidence intervals for both mean and median paired differences
-  - Individual participant win / tie / loss counts and proportion of participants improved
-  - Relative percentage RMSE reduction
+Input (in order of preference)
+  1. overleaf/tables/rmse_participant.csv   raw per-participant RMSE written by generate_figures.py
+  2. overleaf/tables/rmse_dev_*.csv + rmse_pivot_mean.csv   (fallback: RMSE reconstructed from rounded
+     tables; accurate to about 0.01 mg/dL; reported as source = "reconstructed")
 
-Outputs:
-  - overleaf/tables/statistical_tests_best_expert.csv
-  - overleaf/tables/statistical_tests_all_experts.csv
-  - overleaf/tables/table_statistical_tests.tex
-  - Appends statistical macros to overleaf/sections/generated_macros.tex
+For every dataset x horizon x context and every expert:
+  - paired difference  delta_i = RMSE_expert,i - RMSE_HBML,i   (positive = HBML better)
+  - BCa bootstrap 95% CI for the mean and the median difference (10,000 resamples)
+  - two-sided Wilcoxon signed-rank test (primary) and paired t-test (with degrees of freedom)
+  - Shapiro-Wilk test of the paired differences
+  - Benjamini-Hochberg adjusted Wilcoxon p-values (within the best-expert family, and within all experts)
+  - win / tie / loss counts
+
+Outputs (all in overleaf/tables/)
+  statistical_tests_best_expert.csv, statistical_tests_all_experts.csv,
+  statistical_summary.csv (counts quoted in the text), table_statistical_tests.tex
+
+Run generate_figures.py --rmse_only first, and generate_results_macros.py afterwards.
 """
-
+import argparse
 import os
 import re
+import warnings
+
 import numpy as np
 import pandas as pd
-from scipy.stats import wilcoxon, ttest_rel, bootstrap
+from scipy.stats import bootstrap, shapiro, ttest_rel, wilcoxon
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TABLES_DIR = os.path.join(BASE_DIR, "overleaf", "tables")
-SECTIONS_DIR = os.path.join(BASE_DIR, "overleaf", "sections")
 
 DATASETS = ["weinstock", "cgmacros"]
 HORIZONS = [0.5, 2.0, 5.0]
 CONTEXTS = ["6", "12", "24", "full"]
-
+EXPERTS = ["ARIMA", "ETS", "NHITS", "NODE", "XGBoost"]
 HORIZON_MAP = {0.5: "0p5", 2.0: "2", 5.0: "5"}
 HORIZON_LABEL = {0.5: "0.5 hr (30 min)", 2.0: "2 hr", 5.0: "5 hr"}
 CONTEXT_LABEL = {"6": "6 hr", "12": "12 hr", "24": "24 hr", "full": "Full history"}
 DATASET_LABEL = {"weinstock": "Weinstock", "cgmacros": "CGMacros"}
-
-MACRO_HORIZON = {0.5: "ThirtyMin", 2.0: "TwoHour", 5.0: "FiveHour"}
-MACRO_CONTEXT = {"6": "SixHr", "12": "TwelveHr", "24": "TwentyFourHr", "full": "Full"}
+ALPHA = 0.05
+TIE_TOL = 1e-3
 
 
 def clean_num(val):
-    """Strip LaTeX markup and convert to float."""
-    s = re.sub(r"[^0-9.]", "", str(val))
-    return float(s) if s else np.nan
-
-
-def load_group_means():
-    """Load group means from rmse_pivot_mean.csv."""
-    path = os.path.join(TABLES_DIR, "rmse_pivot_mean.csv")
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"Missing {path}")
-    df = pd.read_csv(path)
-    
-    means = {}
-    for _, row in df.iterrows():
-        ds = str(row["dataset"]).strip().lower()
-        h = float(row["horizon"])
-        model = str(row["model"]).strip()
-        for ctx in CONTEXTS:
-            col = f"mean.{ctx}"
-            if col in row and pd.notna(row[col]):
-                means[(ds, h, ctx, model)] = clean_num(row[col])
-    return means
-
-
-def compute_bootstrap_ci(data, stat_func=np.mean, n_resamples=10000, ci=0.95):
-    """Compute bootstrap CI for a 1D numpy array."""
-    data = data[~np.isnan(data)]
-    if len(data) < 5:
-        return np.nan, np.nan
+    s = re.sub(r"[^0-9.\-]", "", str(val))
     try:
-        res = bootstrap((data,), stat_func, confidence_level=ci, n_resamples=n_resamples, method="percentile", random_state=42)
-        return res.confidence_interval.low, res.confidence_interval.high
-    except Exception:
-        # Fallback to numpy percentile bootstrap
-        rng = np.random.default_rng(42)
-        boot_dist = [stat_func(rng.choice(data, size=len(data), replace=True)) for _ in range(n_resamples)]
-        alpha = (1.0 - ci) / 2.0
-        return np.percentile(boot_dist, alpha * 100), np.percentile(boot_dist, (1.0 - alpha) * 100)
+        return float(s)
+    except ValueError:
+        return np.nan
 
 
-def format_p_value(p):
-    """Format p-value for scientific publication."""
-    if pd.isna(p):
-        return "N/A"
-    if p < 0.001:
-        return f"{p:.2e}"
-    return f"{p:.4f}"
+def _to_h(v):
+    s = str(v).strip()
+    return 0.5 if s in ("half", "0.5") else float(s)
 
 
-def run_paired_analysis():
-    group_means = load_group_means()
-    
-    best_expert_records = []
-    all_expert_records = []
-    macros = []
-    
+def load_participant_rmse():
+    """Return ({(dataset, horizon, context): DataFrame[id x model]}, source)."""
+    out = {}
+    raw_path = os.path.join(TABLES_DIR, "rmse_participant.csv")
+    if os.path.exists(raw_path):
+        df = pd.read_csv(raw_path, dtype={"id": str, "context": str})
+        df["horizon"] = df["horizon"].map(_to_h)
+        for (ds, h, ctx), g in df.groupby(["dataset", "horizon", "context"]):
+            out[(ds, float(h), str(ctx))] = g.pivot_table(index="id", columns="model", values="rmse")
+        return out, "raw"
+
+    warnings.warn("rmse_participant.csv not found: reconstructing participant RMSE from rounded tables. "
+                  "Run generate_figures.py --rmse_only to create it.")
+    piv = pd.read_csv(os.path.join(TABLES_DIR, "rmse_pivot_mean.csv"))
+    means = {}
+    for _, row in piv.iterrows():
+        for ctx in CONTEXTS:
+            v = clean_num(row.get(f"mean.{ctx}", np.nan))
+            if not np.isnan(v):
+                means[(str(row["dataset"]).strip().lower(), float(row["horizon"]), ctx, str(row["model"]).strip())] = v
     for ds in DATASETS:
         for h in HORIZONS:
-            h_code = HORIZON_MAP[h]
             for ctx in CONTEXTS:
-                dev_path = os.path.join(TABLES_DIR, f"rmse_dev_{ds}_h{h_code}_c{ctx}.csv")
-                if not os.path.exists(dev_path):
-                    print(f"Warning: file not found: {dev_path}")
+                p = os.path.join(TABLES_DIR, f"rmse_dev_{ds}_h{HORIZON_MAP[h]}_c{ctx}.csv")
+                if not os.path.exists(p):
                     continue
-                
-                dev_df = pd.read_csv(dev_path, index_col="id")
-                n_participants = len(dev_df)
-                
-                # Reconstruct participant-level RMSE
-                raw_rmse = pd.DataFrame(index=dev_df.index)
-                for col in dev_df.columns:
-                    key = (ds, h, ctx, col)
-                    if key in group_means:
-                        col_mean = group_means[key]
-                        raw_rmse[col] = col_mean * (1.0 + dev_df[col] / 100.0)
-                    else:
-                        print(f"Missing group mean for {key}")
-                
-                if "HBML" not in raw_rmse.columns:
-                    print(f"HBML not in columns for {ds} h={h} ctx={ctx}")
+                dev = pd.read_csv(p, dtype={"id": str}).set_index("id")
+                rec = pd.DataFrame(index=dev.index)
+                for col in dev.columns:
+                    if (ds, h, ctx, col) in means:
+                        rec[col] = means[(ds, h, ctx, col)] * (1.0 + dev[col] / 100.0)
+                out[(ds, h, ctx)] = rec
+    return out, "reconstructed"
+
+
+def bh_adjust(p):
+    """Benjamini-Hochberg adjusted p-values (NaNs are left as NaN)."""
+    p = np.asarray(p, dtype=float)
+    q = np.full_like(p, np.nan)
+    ok = np.where(~np.isnan(p))[0]
+    if len(ok) == 0:
+        return q
+    order = ok[np.argsort(p[ok])]
+    m = len(order)
+    adj = p[order] * m / np.arange(1, m + 1)
+    adj = np.minimum.accumulate(adj[::-1])[::-1]
+    q[order] = np.minimum(adj, 1.0)
+    return q
+
+
+def boot_ci(d, stat, n_boot, seed=42):
+    """BCa bootstrap CI; falls back to the percentile method if BCa is degenerate."""
+    d = d[~np.isnan(d)]
+    if len(d) < 5 or np.allclose(d, d[0]):
+        return np.nan, np.nan, "none"
+    for method in ("BCa", "percentile"):
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                res = bootstrap((d,), stat, confidence_level=0.95, n_resamples=n_boot, method=method,
+                                random_state=seed, vectorized=False if stat is np.median else None)
+            lo, hi = float(res.confidence_interval.low), float(res.confidence_interval.high)
+            if np.isfinite(lo) and np.isfinite(hi):
+                return lo, hi, method
+        except Exception:
+            continue
+    return np.nan, np.nan, "none"
+
+
+def fmt_p(p):
+    if pd.isna(p):
+        return "N/A"
+    return f"{p:.2e}" if p < 0.001 else f"{p:.4f}"
+
+
+def tex_p(p):
+    """p-value for LaTeX text and tables: 0.0123 or $1.2\\times10^{-5}$."""
+    if pd.isna(p):
+        return "N/A"
+    if p >= 0.001:
+        return f"{p:.3f}"
+    m, e = f"{p:.1e}".split("e")
+    return f"${m}\\times10^{{{int(e)}}}$"
+
+
+def run_paired_analysis(n_boot=10000):
+    data, source = load_participant_rmse()
+    records = []
+    for ds in DATASETS:
+        for h in HORIZONS:
+            for ctx in CONTEXTS:
+                raw = data.get((ds, h, ctx))
+                if raw is None or "HBML" not in raw.columns:
+                    print(f"Warning: no HBML results for {ds} h={h} ctx={ctx}")
                     continue
-                
-                hbml_rmse = raw_rmse["HBML"].values
-                hbml_mean = np.mean(hbml_rmse)
-                hbml_sd = np.std(hbml_rmse, ddof=1)
-                hbml_median = np.median(hbml_rmse)
-                hbml_iqr = np.percentile(hbml_rmse, 75) - np.percentile(hbml_rmse, 25)
-                
-                experts = [m for m in raw_rmse.columns if m != "HBML"]
-                
-                # Identify Best Constituent Expert (lowest group mean RMSE)
-                expert_means = {m: np.mean(raw_rmse[m].values) for m in experts}
-                best_expert_name = min(expert_means, key=expert_means.get)
-                
-                for exp_name in experts:
-                    is_best = (exp_name == best_expert_name)
-                    exp_rmse = raw_rmse[exp_name].values
-                    exp_mean = np.mean(exp_rmse)
-                    exp_sd = np.std(exp_rmse, ddof=1)
-                    exp_median = np.median(exp_rmse)
-                    exp_iqr = np.percentile(exp_rmse, 75) - np.percentile(exp_rmse, 25)
-                    
-                    # Paired difference: positive means HBML has lower error (improvement)
-                    diff = exp_rmse - hbml_rmse
-                    mean_diff = np.mean(diff)
-                    median_diff = np.median(diff)
-                    se_diff = np.std(diff, ddof=1) / np.sqrt(n_participants)
-                    
-                    # 95% CIs
-                    ci_mean_low, ci_mean_high = compute_bootstrap_ci(diff, stat_func=np.mean)
-                    ci_med_low, ci_med_high = compute_bootstrap_ci(diff, stat_func=np.median)
-                    
-                    # Statistical hypothesis tests (two-sided)
-                    # Wilcoxon test: test if median difference between HBML and Expert is zero
+                experts = [m for m in EXPERTS if m in raw.columns]
+                raw = raw[["HBML"] + experts].dropna()
+                n = len(raw)
+                hb = raw["HBML"].to_numpy()
+                exp_means = {m: raw[m].mean() for m in experts}
+                best = min(exp_means, key=exp_means.get)
+                hbml_lowest = bool(hb.mean() < min(exp_means.values()))
+                for m in experts:
+                    ex = raw[m].to_numpy()
+                    d = ex - hb
+                    lo, hi, meth = boot_ci(d, np.mean, n_boot)
+                    mlo, mhi, mmeth = boot_ci(d, np.median, n_boot)
                     try:
-                        w_res = wilcoxon(hbml_rmse, exp_rmse, alternative="two-sided")
-                        w_stat = w_res.statistic
-                        w_p = w_res.pvalue
+                        w = wilcoxon(ex, hb, alternative="two-sided")
+                        w_stat, w_p = float(w.statistic), float(w.pvalue)
                     except Exception:
                         w_stat, w_p = np.nan, np.nan
-                    
-                    # Paired t-test
+                    t = ttest_rel(ex, hb)
                     try:
-                        t_res = ttest_rel(exp_rmse, hbml_rmse)
-                        t_stat = t_res.statistic
-                        t_p = t_res.pvalue
+                        sw_p = float(shapiro(d).pvalue)
                     except Exception:
-                        t_stat, t_p = np.nan, np.nan
-                    
-                    # Participant win / tie / loss
-                    n_improved = int(np.sum(diff > 0.001))
-                    n_tied = int(np.sum(np.isclose(diff, 0.0, atol=0.001)))
-                    n_worse = int(np.sum(diff < -0.001))
-                    pct_improved = (n_improved / n_participants) * 100.0
-                    
-                    # Relative mean percentage reduction
-                    rel_reduction = ((exp_mean - hbml_mean) / exp_mean) * 100.0
-                    
-                    record = {
-                        "dataset": ds,
-                        "horizon": h,
-                        "context": ctx,
-                        "n_participants": n_participants,
-                        "expert": exp_name,
-                        "is_best_expert": is_best,
-                        "hbml_mean": hbml_mean,
-                        "hbml_sd": hbml_sd,
-                        "hbml_median": hbml_median,
-                        "hbml_iqr": hbml_iqr,
-                        "expert_mean": exp_mean,
-                        "expert_sd": exp_sd,
-                        "expert_median": exp_median,
-                        "expert_iqr": exp_iqr,
-                        "paired_diff_mean": mean_diff,
-                        "paired_diff_se": se_diff,
-                        "paired_diff_median": median_diff,
-                        "ci95_mean_low": ci_mean_low,
-                        "ci95_mean_high": ci_mean_high,
-                        "ci95_med_low": ci_med_low,
-                        "ci95_med_high": ci_med_high,
-                        "wilcoxon_w": w_stat,
-                        "wilcoxon_p": w_p,
-                        "ttest_t": t_stat,
-                        "ttest_p": t_p,
-                        "n_improved": n_improved,
-                        "n_tied": n_tied,
-                        "n_worse": n_worse,
-                        "pct_improved": pct_improved,
-                        "rel_reduction_pct": rel_reduction,
-                    }
-                    
-                    all_expert_records.append(record)
-                    if is_best:
-                        best_expert_records.append(record)
-                        
-                        # Generate LaTeX macros for key benchmarks
-                        m_ds = DATASET_LABEL[ds]
-                        m_h = MACRO_HORIZON[h]
-                        m_ctx = MACRO_CONTEXT[ctx]
-                        
-                        macros.append(f"\\newcommand{{\\WilcoxonP{m_ds}{m_h}{m_ctx}}}{{{format_p_value(w_p)}}}")
-                        macros.append(f"\\newcommand{{\\PctImproved{m_ds}{m_h}{m_ctx}}}{{{pct_improved:.1f}}}")
-                        macros.append(f"\\newcommand{{\\NImproved{m_ds}{m_h}{m_ctx}}}{{{n_improved}}}")
-                        macros.append(f"\\newcommand{{\\NTotal{m_ds}{m_h}{m_ctx}}}{{{n_participants}}}")
-                        macros.append(f"\\newcommand{{\\PairedDiffMean{m_ds}{m_h}{m_ctx}}}{{{mean_diff:.2f}}}")
-                        macros.append(f"\\newcommand{{\\PairedDiffMedian{m_ds}{m_h}{m_ctx}}}{{{median_diff:.2f}}}")
-                        macros.append(f"\\newcommand{{\\BestExpert{m_ds}{m_h}{m_ctx}}}{{{best_expert_name}}}")
+                        sw_p = np.nan
+                    n_imp = int((d > TIE_TOL).sum())
+                    n_worse = int((d < -TIE_TOL).sum())
+                    records.append(dict(
+                        dataset=ds, horizon=h, context=ctx, n_participants=n, expert=m, is_best_expert=(m == best),
+                        hbml_lowest_mean=hbml_lowest,
+                        hbml_mean=hb.mean(), hbml_sd=hb.std(ddof=1), hbml_median=np.median(hb),
+                        hbml_iqr=np.percentile(hb, 75) - np.percentile(hb, 25),
+                        expert_mean=ex.mean(), expert_sd=ex.std(ddof=1), expert_median=np.median(ex),
+                        expert_iqr=np.percentile(ex, 75) - np.percentile(ex, 25),
+                        paired_diff_mean=d.mean(), paired_diff_se=d.std(ddof=1) / np.sqrt(n),
+                        paired_diff_median=np.median(d),
+                        ci95_mean_low=lo, ci95_mean_high=hi, ci95_med_low=mlo, ci95_med_high=mhi,
+                        ci_method_mean=meth, ci_method_median=mmeth,
+                        wilcoxon_w=w_stat, wilcoxon_p=w_p,
+                        ttest_t=float(t.statistic), ttest_df=n - 1, ttest_p=float(t.pvalue),
+                        shapiro_p=sw_p,
+                        n_improved=n_imp, n_tied=n - n_imp - n_worse, n_worse=n_worse,
+                        pct_improved=100.0 * n_imp / n, pct_worse=100.0 * n_worse / n,
+                        rel_reduction_pct=100.0 * (ex.mean() - hb.mean()) / ex.mean(),
+                    ))
+    df_all = pd.DataFrame(records)
+    if df_all.empty:
+        raise SystemExit("No statistics could be computed (no input tables).")
+    df_all["wilcoxon_p_bh"] = bh_adjust(df_all["wilcoxon_p"].to_numpy())
+    best_mask = df_all["is_best_expert"].to_numpy()
+    df_all["wilcoxon_p_bh_best_family"] = np.nan
+    df_all.loc[best_mask, "wilcoxon_p_bh_best_family"] = bh_adjust(df_all.loc[best_mask, "wilcoxon_p"].to_numpy())
 
-    df_best = pd.DataFrame(best_expert_records)
-    df_all = pd.DataFrame(all_expert_records)
-    
-    # Save CSVs
-    best_csv_path = os.path.join(TABLES_DIR, "statistical_tests_best_expert.csv")
-    all_csv_path = os.path.join(TABLES_DIR, "statistical_tests_all_experts.csv")
-    df_best.to_csv(best_csv_path, index=False)
-    df_all.to_csv(all_csv_path, index=False)
-    print(f"Saved best-expert tests to {best_csv_path}")
-    print(f"Saved all-expert tests to {all_csv_path}")
-    
-    # Generate publication-grade LaTeX table
-    tex_path = os.path.join(TABLES_DIR, "table_statistical_tests.tex")
-    generate_latex_table(df_best, tex_path)
-    print(f"Saved LaTeX statistical table to {tex_path}")
-    
-    # Regenerate all LaTeX macros cleanly to ensure exact consistency with zero duplicates
-    try:
-        from generate_results_macros import generate_macros
-        generate_macros()
-    except Exception as e:
-        print(f"Note: Could not run generate_macros: {e}")
+    def direction(r, col):
+        if pd.isna(r[col]) or r[col] >= ALPHA:
+            return "ns"
+        return "hbml_better" if r["paired_diff_mean"] > 0 else "hbml_worse"
+    df_all["direction_bh"] = df_all.apply(lambda r: direction(r, "wilcoxon_p_bh"), axis=1)
+    df_best = df_all[best_mask].copy()
+    df_best["direction_raw"] = df_best.apply(lambda r: direction(r, "wilcoxon_p"), axis=1)
+    df_best["direction_bh"] = df_best.apply(lambda r: direction(r, "wilcoxon_p_bh_best_family"), axis=1)
+
+    df_best.to_csv(os.path.join(TABLES_DIR, "statistical_tests_best_expert.csv"), index=False)
+    df_all.to_csv(os.path.join(TABLES_DIR, "statistical_tests_all_experts.csv"), index=False)
+
+    # ---- counts quoted in the text ----
+    rows = []
+    def add(scope, key, value):
+        rows.append(dict(scope=scope, key=key, value=value))
+    for scope, g in [("all", df_best)] + [(ds, df_best[df_best.dataset == ds]) for ds in DATASETS]:
+        if g.empty:
+            continue
+        add(scope, "n_configs", len(g))
+        add(scope, "n_hbml_lowest_mean", int(g["hbml_lowest_mean"].sum()))
+        add(scope, "n_mean_diff_positive", int((g["paired_diff_mean"] > 0).sum()))
+        add(scope, "n_sig_raw_hbml_better", int((g["direction_raw"] == "hbml_better").sum()))
+        add(scope, "n_sig_raw_hbml_worse", int((g["direction_raw"] == "hbml_worse").sum()))
+        add(scope, "n_sig_bh_hbml_better", int((g["direction_bh"] == "hbml_better").sum()))
+        add(scope, "n_sig_bh_hbml_worse", int((g["direction_bh"] == "hbml_worse").sum()))
+        add(scope, "n_not_sig_bh", int((g["direction_bh"] == "ns").sum()))
+        add(scope, "pct_improved_min", round(float(g["pct_improved"].min()), 1))
+        add(scope, "pct_improved_max", round(float(g["pct_improved"].max()), 1))
+        add(scope, "n_participants_min", int(g["n_participants"].min()))
+        add(scope, "n_participants_max", int(g["n_participants"].max()))
+        add(scope, "n_shapiro_reject", int((g["shapiro_p"] < ALPHA).sum()))
+    add("all", "source", source)
+    add("all", "n_boot", n_boot)
+    add("all", "fdr_q", ALPHA)
+    pd.DataFrame(rows).to_csv(os.path.join(TABLES_DIR, "statistical_summary.csv"), index=False)
+
+    generate_latex_table(df_best, os.path.join(TABLES_DIR, "table_statistical_tests.tex"))
+    print(f"Saved statistics for {len(df_best)} configurations (participant RMSE source: {source}).")
+    return df_best
 
 
 def generate_latex_table(df_best, output_tex):
-    """Generate a clean, professional LaTeX table of paired statistical tests."""
-    lines = []
-    lines.append(r"\begin{table*}[t]")
-    lines.append(r"\centering")
-    lines.append(r"\small")
-    lines.append(r"\begin{tabular}{llccccccc}")
-    lines.append(r"\toprule")
-    lines.append(r"Dataset & Horizon & Context & $N$ & Best Expert & Paired $\Delta$ Mean [95\% CI] & Paired $\Delta$ Med [95\% CI] & Improved & Wilcoxon $p$ \\")
-    lines.append(r"\midrule")
-    
-    current_ds = None
-    for _, row in df_best.iterrows():
-        ds = DATASET_LABEL[row["dataset"]]
-        h = HORIZON_LABEL[row["horizon"]]
-        ctx = CONTEXT_LABEL[row["context"]]
-        n = int(row["n_participants"])
-        best_exp = row["expert"]
-        
-        mean_diff = row["paired_diff_mean"]
-        ci_m_low = row["ci95_mean_low"]
-        ci_m_high = row["ci95_mean_high"]
-        
-        med_diff = row["paired_diff_median"]
-        ci_med_low = row["ci95_med_low"]
-        ci_med_high = row["ci95_med_high"]
-        
-        n_imp = int(row["n_improved"])
-        pct_imp = row["pct_improved"]
-        p_val = row["wilcoxon_p"]
-        p_str = format_p_value(p_val)
-        if p_val < 0.05:
-            p_str = f"\\textbf{{{p_str}}}"
-            
-        if current_ds is not None and current_ds != ds:
+    lines = [r"\begin{table*}[t]", r"\centering", r"\scriptsize",
+             r"\begin{tabular}{lllclccccc}", r"\toprule",
+             r"Dataset & Horizon & Context & $N$ & Best expert & $\Delta$ mean [95\% CI] & $\Delta$ median [95\% CI] & HBML better & $p$ & $p_{\mathrm{BH}}$ \\",
+             r"\midrule"]
+    cur = None
+    for _, r in df_best.iterrows():
+        ds = DATASET_LABEL[r["dataset"]]
+        if cur is not None and cur != ds:
             lines.append(r"\midrule")
-        current_ds = ds
-        
-        line = (
-            f"{ds} & {h} & {ctx} & {n} & {best_exp} & "
-            f"{mean_diff:+.2f} [{ci_m_low:+.2f}, {ci_m_high:+.2f}] & "
-            f"{med_diff:+.2f} [{ci_med_low:+.2f}, {ci_med_high:+.2f}] & "
-            f"{n_imp}/{n} ({pct_imp:.1f}\\%) & {p_str} \\\\"
-        )
-        lines.append(line)
-        
-    lines.append(r"\bottomrule")
-    lines.append(r"\end{tabular}")
-    lines.append(
-        r"\caption{\textbf{Participant-level paired statistical comparisons between HBML and the best constituent expert.} "
-        r"For each configuration, the best constituent expert is the non-HBML model achieving the lowest cohort mean RMSE. "
-        r"Paired differences ($\Delta = \text{RMSE}_{\text{best}} - \text{RMSE}_{\text{HBML}}$) are computed per participant, "
-        r"where positive values denote HBML superiority. Confidence intervals (95\% CI) are computed via 10,000 bootstrap resamples. "
-        r"Hypothesis testing is evaluated via two-sided paired Wilcoxon signed-rank tests ($p < 0.05$ bolded). "
-        r"Participant improvement counts ($n_{\text{improved}}/N$) report individuals where HBML achieved strictly lower RMSE.}"
-    )
-    lines.append(r"\label{tab:statistical_tests}")
-    lines.append(r"\end{table*}")
-    
+        cur = ds
+        n = int(r["n_participants"])
+        q = r["wilcoxon_p_bh_best_family"]
+        q_str = tex_p(q)
+        if pd.notna(q) and q < ALPHA:
+            q_str = f"\\textbf{{\\boldmath {q_str}}}"
+        lines.append(
+            f"{ds} & {HORIZON_LABEL[r['horizon']]} & {CONTEXT_LABEL[r['context']]} & {n} & {r['expert']} & "
+            f"{r['paired_diff_mean']:+.2f} [{r['ci95_mean_low']:+.2f}, {r['ci95_mean_high']:+.2f}] & "
+            f"{r['paired_diff_median']:+.2f} [{r['ci95_med_low']:+.2f}, {r['ci95_med_high']:+.2f}] & "
+            f"{int(r['n_improved'])}/{n} ({r['pct_improved']:.1f}\\%) & {tex_p(r['wilcoxon_p'])} & {q_str} \\\\")
+    lines += [r"\bottomrule", r"\end{tabular}",
+              r"\caption{\textbf{Participant-level paired comparisons between HBML and the best constituent expert.} "
+              r"For each configuration, the best expert is the constituent model with the lowest cohort mean RMSE. "
+              r"$\Delta = \text{RMSE}_{\text{best}} - \text{RMSE}_{\text{HBML}}$ (mg/dL) is computed per participant; "
+              r"positive values favour HBML and negative values favour the expert. Confidence intervals are "
+              r"bias-corrected and accelerated bootstrap intervals (10,000 resamples). $p$: two-sided paired Wilcoxon "
+              r"signed-rank test; $p_{\mathrm{BH}}$: Benjamini--Hochberg adjustment across the configurations shown "
+              r"(bold: $p_{\mathrm{BH}} < 0.05$, in either direction). ``HBML better'' counts participants with "
+              r"strictly lower RMSE under HBML.}",
+              r"\label{tab:statistical_tests}", r"\end{table*}"]
     with open(output_tex, "w") as f:
         f.write("\n".join(lines) + "\n")
 
 
 if __name__ == "__main__":
-    run_paired_analysis()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--n_boot", type=int, default=10000)
+    ap.add_argument("--tables_dir", default=None, help="Override overleaf/tables (used for testing).")
+    a = ap.parse_args()
+    if a.tables_dir:
+        TABLES_DIR = a.tables_dir
+    run_paired_analysis(a.n_boot)

@@ -81,6 +81,8 @@ fi
 echo "========================================================================"
 echo "Stage 3: Statistical tests, baseline comparators, and paper figures"
 echo "========================================================================"
+python3 generate_figures.py --rmse_only --median || true
+python3 generate_figures.py --rmse_only || true
 python3 calculate_statistics.py || true
 python3 calculate_baselines.py || true
 python3 generate_figures.py || true
@@ -95,6 +97,7 @@ echo "========================================================================"
 echo "Stage 4: Generating LaTeX result macros"
 echo "========================================================================"
 python3 generate_results_macros.py
+python3 check_macros.py || echo "WARNING: check_macros.py found stale, missing or hand-typed numbers."
 
 # ─── Optional: Direct Overleaf Push ───────────────────────────────────────────
 if [ "$PUSH_OVERLEAF" = true ] && [ -d "overleaf/.git" ]; then

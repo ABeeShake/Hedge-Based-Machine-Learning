@@ -1334,7 +1334,41 @@ def scale_free_hedge_meta_forecast(forecasts, losses, **kwargs):
 
 # Registry mapping method names to their forecast functions.
 # Used by get_weighted_forecasts_advanced to dispatch calls.
+def fixed_share_scale_free_forecast(forecasts, losses, **kwargs):
+    """Recursive Scale-Free Hedge with Fixed-Share mixing (Algorithm 1 of the manuscript).
+
+    v_k  = p_k * exp(-(l_k - min_j l_j) / L_t),   L_t = max((1 - gamma) L_{t-1}, max_k l_k)
+    p'_k = (1 - alpha_n) * v_k / sum(v) + alpha_n / K
+
+    Implemented in :mod:`ExpMethods.aggregators` (NumPy only) so the pipeline,
+    ``compare_fixed_share.py`` and the tests all run the same code.
+
+    Kwargs
+    ------
+    gamma : float, forgetting rate of the loss scale (default 0.2).
+    alpha : "fd" (1/(n+1)^2, default), "d" (1/(n+1)), a constant in [0, 1), or 0 for no sharing.
+    start, horizon, targets, save_weights : standard kwargs.
+    """
+    from ExpMethods import aggregators as _agg
+    start = kwargs.get("start", None)
+    if start is None or not kwargs.get("end", None):
+        raise ValueError("Must have start and end times")
+    f_mat = utils.make_matrix(forecasts)
+    l_mat = utils.make_matrix(losses)
+    targets_arr = kwargs.get("targets", None)
+    if targets_arr is not None:
+        targets_arr = utils.to_np(targets_arr).ravel()
+    return _agg.run_hedge(
+        f_mat, l_mat, targets_arr,
+        start=start, horizon=kwargs.get("horizon", 1),
+        update="recursive", scale="decay_max",
+        gamma=float(kwargs.get("gamma", 0.2)), alpha=kwargs.get("alpha", "fd"),
+        return_weights=kwargs.get("save_weights", False),
+    )
+
+
 _ADVANCED_FORECAST_FUNCS = {
+    "fixed_share_sf":          fixed_share_scale_free_forecast,
     "variable_share":          variable_share_forecast,
     "adahedge":                adahedge_forecast,
     "scale_free_hedge":        scale_free_hedge_forecast,

@@ -220,6 +220,12 @@ echo "STAGE 4: COMPUTING STATISTICAL TESTS & COMPARATOR BASELINES"
 echo "========================================================================"
 
 # Paired participant-level Wilcoxon signed-rank & paired t-tests
+if [ -f "generate_figures.py" ]; then
+    echo ">>> Building RMSE tables first (statistics and baselines read them)..."
+    "$PYTHON_EXE" generate_figures.py --rmse_only --median || echo "Warning: median RMSE tables incomplete."
+    "$PYTHON_EXE" generate_figures.py --rmse_only || echo "Warning: mean RMSE tables incomplete."
+fi
+
 if [ -f "calculate_statistics.py" ]; then
     echo ">>> Running calculate_statistics.py..."
     "$PYTHON_EXE" calculate_statistics.py || echo "Warning: calculate_statistics.py encountered partial data."
@@ -291,6 +297,7 @@ echo "STAGE 6: GENERATING LATEX RESULTS MACROS"
 echo "========================================================================"
 if [ -f "generate_results_macros.py" ]; then
     "$PYTHON_EXE" generate_results_macros.py
+    "$PYTHON_EXE" check_macros.py || echo "WARNING: check_macros.py found stale, missing or hand-typed numbers (see above)."
     echo "✓ Generated macros in overleaf/sections/generated_macros.tex."
 fi
 

@@ -27,173 +27,13 @@ def fmt_dataset(d):
     return _DATASET_DISPLAY.get(d.lower(), d.capitalize())
 
 def generate_macros():
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    tables_dir = os.path.join(base_dir, "overleaf", "tables")
-    output_file = os.path.join(base_dir, "overleaf", "sections", "generated_macros.tex")
+    """Regenerate overleaf/sections/generated_macros.tex.
 
-    macros = []
-    
-    # 1. Process rmse_pivot.csv
-    rmse_path = os.path.join(tables_dir, "rmse_pivot_mean.csv")
-    if os.path.exists(rmse_path):
-        rmse_df = pd.read_csv(rmse_path)
-        
-        weinstock_30 = rmse_df[(rmse_df["dataset"].str.contains("weinstock", case=False, na=False)) & (rmse_df["horizon"] == 0.5)]
-        
-        for _, row in rmse_df.iterrows():
-            dataset = str(row['dataset']).replace(" ", "").replace("(", "").replace(")", "").replace(".", "").replace("-", "").replace("2016", "").capitalize()
-            if pd.isna(row['dataset']) or dataset == "Nan":
-                continue
-                
-            h_raw = str(row['horizon'])
-            if h_raw == '0.5':
-                horizon = "ThirtyMin"
-            elif h_raw == '2.0' or h_raw == '2':
-                horizon = "TwoHour"
-            elif h_raw == '5.0' or h_raw == '5':
-                horizon = "FiveHour"
-            else:
-                horizon = h_raw.replace(".", "")
-                
-            model = str(row['model']).replace(" ", "").replace("(", "").replace(")", "").replace(".", "").replace("-", "")
-            
-            for context_suffix, context_name in [('6', 'SixHr'), ('12', 'TwelveHr'), ('24', 'TwentyFourHr'), ('full', 'Full')]:
-                col_name = f"mean.{context_suffix}"
-                if col_name in row and not pd.isna(row[col_name]):
-                    val = str(row[col_name]).replace("*", "").replace("\\textbf{", "").replace("}", "")
-                    macro_name = f"RMSEMean{dataset}{horizon}{model}{context_name}"
-                    macros.append(f"\\newcommand{{\\{macro_name}}}{{{val}}}")
-                    
-        # Calculate reductions for key configurations
-        try:
-            for ds_key, ds_name in [("weinstock", "Weinstock"), ("cgmacros", "Cgmacros")]:
-                ds_sub = rmse_df[rmse_df["dataset"].str.contains(ds_key, case=False, na=False)]
-                for h_val, h_name in [(0.5, "ThirtyMin"), (2.0, "TwoHour"), (5.0, "FiveHour")]:
-                    h_sub = ds_sub[ds_sub["horizon"].astype(str).isin([str(h_val), str(int(h_val)) if float(h_val).is_integer() else str(h_val)])]
-                    hbml_sub = h_sub[h_sub["model"] == "HBML"]
-                    experts_sub = h_sub[h_sub["model"] != "HBML"]
-                    if not hbml_sub.empty and not experts_sub.empty:
-                        for ctx_suffix, ctx_name in [('6', 'SixHr'), ('12', 'TwelveHr'), ('24', 'TwentyFourHr'), ('full', 'Full')]:
-                            col_name = f"mean.{ctx_suffix}"
-                            if col_name in hbml_sub and col_name in experts_sub:
-                                hbml_val = float(str(hbml_sub[col_name].values[0]).replace("*", "").replace("\\textbf{", "").replace("}", ""))
-                                exp_vals = [float(str(v).replace("*", "").replace("\\textbf{", "").replace("}", "")) for v in experts_sub[col_name].values if pd.notna(v)]
-                                if exp_vals:
-                                    best_exp_val = min(exp_vals)
-                                    reduction = (best_exp_val - hbml_val) / best_exp_val * 100.0
-                                    macros.append(f"\\newcommand{{\\RMSEReduction{ds_name}{h_name}{ctx_name}}}{{{reduction:.1f}}}")
-                                    if ds_name == "Weinstock" and h_name == "ThirtyMin" and ctx_name == "Full":
-                                        macros.append(f"\\newcommand{{\\RMSEMeanWeinstockThirtyMinReduction}}{{{reduction:.1f}}}")
-        except Exception as e:
-            print("Could not compute RMSE reductions:", e)
-
-        # 1b. Process statistical_tests_all_experts.csv for SD macros
-        stats_path = os.path.join(tables_dir, "statistical_tests_all_experts.csv")
-        if os.path.exists(stats_path):
-            try:
-                stats_df = pd.read_csv(stats_path)
-                for _, row in stats_df.iterrows():
-                    ds_str = str(row['dataset']).capitalize()
-                    h_val = str(row['horizon'])
-                    if h_val in ['0.5', 'ThirtyMin']:
-                        h_name = "ThirtyMin"
-                    elif h_val in ['2.0', '2', 'TwoHour']:
-                        h_name = "TwoHour"
-                    elif h_val in ['5.0', '5', 'FiveHour']:
-                        h_name = "FiveHour"
-                    else:
-                        h_name = h_val.replace(".", "")
-                        
-                    c_val = str(row['context']).lower()
-                    if c_val == '6':
-                        ctx_name = "SixHr"
-                    elif c_val == '12':
-                        ctx_name = "TwelveHr"
-                    elif c_val == '24':
-                        ctx_name = "TwentyFourHr"
-                    elif c_val == 'full':
-                        ctx_name = "Full"
-                    else:
-                        ctx_name = c_val.capitalize()
-                        
-                    exp_name = str(row['expert']).replace(" ", "").replace("(", "").replace(")", "").replace(".", "").replace("-", "")
-                    macros.append(f"\\newcommand{{\\RMSEsd{ds_str}{h_name}HBML{ctx_name}}}{{{row['hbml_sd']:.2f}}}")
-                    macros.append(f"\\newcommand{{\\RMSEsd{ds_str}{h_name}{exp_name}{ctx_name}}}{{{row['expert_sd']:.2f}}}")
-            except Exception as e:
-                print("Could not compute RMSE SD macros:", e)
-
-    # 2. Process max_ceg.csv for CEG metrics
-    ceg_path = os.path.join(tables_dir, "max_ceg.csv")
-    if os.path.exists(ceg_path):
-        ceg_df = pd.read_csv(ceg_path)
-        for _, row in ceg_df.iterrows():
-            dataset = str(row['dataset']).replace(" ", "").replace("(", "").replace(")", "").replace(".", "").replace("-", "").replace("2016", "").capitalize()
-            if pd.isna(row['dataset']) or dataset == "Nan":
-                continue
-            
-            h_raw = str(row['horizon'])
-            if h_raw == '0.5':
-                horizon = "ThirtyMin"
-            elif h_raw == '2.0' or h_raw == '2':
-                horizon = "TwoHour"
-            elif h_raw == '5.0' or h_raw == '5':
-                horizon = "FiveHour"
-            else:
-                horizon = h_raw.replace(".", "")
-                
-            c_raw = str(row['context'])
-            if c_raw == '6':
-                context = "SixHr"
-            elif c_raw == '12':
-                context = "TwelveHr"
-            elif c_raw == '24':
-                context = "TwentyFourHr"
-            elif c_raw == 'full':
-                context = "Full"
-            else:
-                context = c_raw
-
-            macros.append(f"\\newcommand{{\\CEG{dataset}{horizon}{context}AB}}{{{row['A+Bpct']:.2f}}}")
-            macros.append(f"\\newcommand{{\\CEG{dataset}{horizon}{context}A}}{{{row['Apct']:.2f}}}")
-            macros.append(f"\\newcommand{{\\CEG{dataset}{horizon}{context}B}}{{{row['Bpct']:.2f}}}")
-            macros.append(f"\\newcommand{{\\CEG{dataset}{horizon}{context}C}}{{{row['Cpct']:.2f}}}")
-            macros.append(f"\\newcommand{{\\CEG{dataset}{horizon}{context}DOne}}{{{row['D1pct']:.2f}}}")
-            macros.append(f"\\newcommand{{\\CEG{dataset}{horizon}{context}DTwo}}{{{row['D2pct']:.2f}}}")
-            macros.append(f"\\newcommand{{\\CEG{dataset}{horizon}{context}EOne}}{{{row['E1pct']:.2f}}}")
-            macros.append(f"\\newcommand{{\\CEG{dataset}{horizon}{context}ETwo}}{{{row['E2pct']:.2f}}}")
-
-            # Also yield shortcuts for the heavily discussed horizons in text to not break compilation
-            if dataset == "Weinstock" and horizon == "ThirtyMin" and context == "Full":
-                macros.append(f"\\newcommand{{\\CEGWeinstockThirtyMinAB}}{{{row['A+Bpct']:.2f}}}")
-                macros.append(f"\\newcommand{{\\CEGWeinstockThirtyMinA}}{{{row['Apct']:.2f}}}")
-                macros.append(f"\\newcommand{{\\CEGWeinstockThirtyMinCD}}{{{row['Cpct'] + row['D1pct'] + row['D2pct']:.2f}}}")
-                macros.append(f"\\newcommand{{\\CEGWeinstockThirtyMinE}}{{{row['E1pct'] + row['E2pct']:.2f}}}")
-            
-            if dataset == "Weinstock" and horizon == "FiveHour" and context == "TwentyFourHr":
-                macros.append(f"\\newcommand{{\\CEGWeinstockFiveHourAB}}{{{row['A+Bpct']:.2f}}}")
-                macros.append(f"\\newcommand{{\\CEGWeinstockFiveHourA}}{{{row['Apct']:.2f}}}")
-                macros.append(f"\\newcommand{{\\CEGWeinstockFiveHourCD}}{{{row['Cpct'] + row['D1pct'] + row['D2pct']:.2f}}}")
-                macros.append(f"\\newcommand{{\\CEGWeinstockFiveHourE}}{{{row['E1pct'] + row['E2pct']:.2f}}}")
-
-    # Deduplicate: if the same macro name was added more than once (e.g. from
-    # multiple process_results.py runs), keep only the last definition so that
-    # LaTeX doesn't raise "\newcommand already defined" errors.
-    seen: dict[str, str] = {}
-    for line in macros:
-        # Extract the macro name (\newcommand{\Name}{value} -> Name)
-        m = re.match(r"\\newcommand\{\\([^}]+)\}", line)
-        key = m.group(1) if m else line
-        seen[key] = line
-    unique_macros = list(seen.values())
-
-    with open(output_file, "w") as f:
-        f.write("% Auto-generated macros from CSV data\n")
-        f.write("\n".join(unique_macros))
-    
-    duplicates = len(macros) - len(unique_macros)
-    if duplicates:
-        print(f"  Removed {duplicates} duplicate macro definition(s).")
-    print(f"Generated {len(unique_macros)} macros in {output_file}")
+    There is exactly one macro writer in this project, generate_results_macros.py.
+    This wrapper only exists so older call sites keep working.
+    """
+    from generate_results_macros import generate_macros as _generate
+    return _generate()
 
 def fmt_horizon(h):
     """Return display string for a horizon value."""
@@ -238,15 +78,16 @@ def get_args():
     parser.add_argument("--plot_ceg", action=argparse.BooleanOptionalAction)
     parser.add_argument("--plot_all_regrets", action=argparse.BooleanOptionalAction)
     parser.add_argument("--plot_moe_regrets", action=argparse.BooleanOptionalAction)
-    parser.add_argument("--hedge_version", type=str, default="HBML-SFHDF")
+    parser.add_argument("--hedge_version", type=str, default=GlobalValues.primary_hbml)
     parser.add_argument("--update_loss_type", type=str, default="mse", choices=["mse", "mae"],
                         help="Loss metric used for internal exponential weight updates")
     parser.add_argument("--norm_type", type=str, default="shift", choices=["shift", "ratio"],
                         help="Per-step loss normalization: 'shift' subtracts min (default), 'ratio' divides by max (bounded)")
     parser.add_argument("--advanced_methods", action="store_true",
                         help="Also run Variable Share, AdaHedge, and Scale-Free Hedge algorithms")
-    parser.add_argument("--gamma_search", action="store_true",
-                        help="Grid-search SFHDF decay gamma so that SFHDF beats all experts in RMSE")
+    parser.add_argument("--write_macros", action="store_true",
+                        help="Regenerate LaTeX macros at the end (normally done once by the pipeline, "
+                             "after tables and statistics exist).")
     
     return parser.parse_args()
 
@@ -399,159 +240,14 @@ def get_methods_advanced(settings, **kwargs):
             **base,
             method_type="scale_free_hedge_meta",
             # gamma_grid defaults to SFH_META_GAMMA_GRID inside simulate.py
+        ),        # Algorithm 1 of the manuscript: recursive Scale-Free Hedge + Fixed-Share (alpha_n = 1/(n+1)^2)
+        "HBML-FS": dict(
+            **base,
+            method_type="fixed_share_sf",
+            gamma=sfhdf_gamma,
+            alpha="fd",
         ),
     }
-
-# Ordered candidate list for gamma grid search (0 = no forgetting, 1 = fully forgetful)
-SFHDF_GAMMA_CANDIDATES = [0.0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-
-
-def find_best_sfhdf_gamma(forecast_dir, data_dir, settings_dir, target_col,
-                          eta_str, omit_ids, omit_models, common_ids):
-    """Grid-search gamma for SFHDF and SFH-SD over SFHDF_GAMMA_CANDIDATES.
-
-    For each gamma value, evaluates both scale_free_hedge_df_forecast (SFHDF)
-    and scale_free_hedge_sd_forecast (SFH-SD) in-memory across all patients
-    using the correct (ŷ - y)² RMSE estimand.
-
-    Selection criterion: first gamma for which the method's mean RMSE is
-    strictly less than the mean RMSE of every expert model.  Falls back to
-    the gamma with the overall lowest RMSE for each method independently.
-
-    Parameters
-    ----------
-    forecast_dir, data_dir, settings_dir : str
-        Directories used in the main processing loop.
-    target_col : str
-        Name of the glucose column ('Libre.GL' or 'Dexcom.GL').
-    eta_str, omit_ids, omit_models, common_ids :
-        Forwarded from main() to mirror the same patient subset.
-
-    Returns
-    -------
-    tuple of (float, float)
-        ``(sfhdf_gamma, sfh_sd_gamma)`` — the chosen gamma for SFHDF and
-        SFH-SD respectively.  The two values may differ.
-    """
-    import glob as _glob
-
-    # ---- collect patient data (mirrors main loop file loading, no I/O side-effects) ----
-    patient_data = []   # list of (id_num, forecasts_dict, losses_dict, settings_dict, targets)
-    for file in _glob.glob(os.path.join(forecast_dir, "*_forecasts.csv")):
-        id_num = os.path.basename(file)[:3]
-        if id_num in omit_ids or id_num not in common_ids:
-            continue
-        f_path = file
-        t_path = os.path.join(data_dir, f"{id_num}.csv")
-        s_path = os.path.join(settings_dir, f"{id_num}.json")
-        if not os.path.exists(s_path) or not os.path.exists(t_path):
-            continue
-
-        settings = utils.load_sim_settings(s_path)
-        f_df = pd.read_csv(f_path)
-        cols_to_drop = list(set(f_df.columns) & ({"LSTM", "HBML", "FS (Start)",
-                                                   "FS (Uniform)", "FS (Decay)"} | set(omit_models)))
-        f_df.drop(cols_to_drop, axis=1, inplace=True, errors="ignore")
-        if "HoltWinters" in f_df.columns:
-            f_df["ETS"] = f_df["HoltWinters"]
-            f_df.drop("HoltWinters", axis=1, inplace=True)
-
-        forecasts = {col: f_df[col].to_numpy() for col in f_df.columns}
-
-        t_df = pd.read_csv(t_path)
-        targets = t_df[target_col].to_numpy() if target_col in t_df.columns else utils.load_targets_from_csv(t_path)
-
-        # Length alignment
-        _fl = len(forecasts[list(forecasts.keys())[0]])
-        if _fl != len(targets):
-            _min = min(_fl, len(targets))
-            targets = targets[:_min]
-            forecasts = {k: v[:_min] for k, v in forecasts.items()}
-
-        losses = sim.get_online_losses(forecasts, targets, **settings)
-        patient_data.append((id_num, forecasts, losses, settings, targets))
-
-    if not patient_data:
-        print("[gamma_search] No patient data found; defaulting to gamma=0.2 for both methods")
-        return 0.2, 0.2
-
-    # ---- expert mean RMSE across patients ----
-    expert_rmse_sum = {}   # model -> sum of per-patient RMSE
-    n_patients = len(patient_data)
-    for _, forecasts, losses, _, _ in patient_data:
-        for model, loss_arr in losses.items():
-            if model in (set(forecasts.keys()) | {"HBML", "HBML-SFH", "HBML-SFHDF", "HBML-SFH-SD"}):
-                valid = loss_arr[100:-10]
-                rmse = np.sqrt(np.nanmean(valid)) if len(valid) > 0 and not np.isnan(valid).all() else np.nan
-                expert_rmse_sum.setdefault(model, 0.0)
-                expert_rmse_sum[model] += rmse
-    expert_mean = {m: expert_rmse_sum[m] / n_patients for m in expert_rmse_sum if not np.isnan(expert_rmse_sum[m] / n_patients)}
-    if not expert_mean:
-        print("[gamma_search] Could not compute expert RMSE; defaulting to gamma=0.2 for both")
-        return 0.2, 0.2
-    min_expert_mean_rmse = min(expert_mean.values())
-
-    # ---- joint grid search over gamma for both SFHDF and SFH-SD ----
-    sfhdf_rmse_per_gamma  = {}
-    sfh_sd_rmse_per_gamma = {}
-    sfhdf_best  = None   # first gamma where SFHDF beats all experts
-    sfh_sd_best = None   # first gamma where SFH-SD beats all experts
-
-    for gamma in SFHDF_GAMMA_CANDIDATES:
-        sfhdf_sum  = 0.0
-        sfh_sd_sum = 0.0
-        for _, forecasts, losses, settings, targets in patient_data:
-            # SFHDF
-            _, exp_l_df = sim.scale_free_hedge_df_forecast(
-                forecasts, losses, gamma=gamma,
-                save_weights=False, forecast_type="mean",
-                targets=targets, **settings
-            )
-            valid_df = exp_l_df[100:-10]
-            sfhdf_sum += np.sqrt(np.nanmean(valid_df)) if len(valid_df) > 0 and not np.isnan(valid_df).all() else 0.0
-
-            # SFH-SD
-            _, exp_l_sd = sim.scale_free_hedge_sd_forecast(
-                forecasts, losses, gamma=gamma,
-                save_weights=False, forecast_type="mean",
-                targets=targets, **settings
-            )
-            valid_sd = exp_l_sd[100:-10]
-            sfh_sd_sum += np.sqrt(np.nanmean(valid_sd)) if len(valid_sd) > 0 and not np.isnan(valid_sd).all() else 0.0
-
-        sfhdf_mean  = sfhdf_sum  / n_patients
-        sfh_sd_mean = sfh_sd_sum / n_patients
-        sfhdf_rmse_per_gamma[gamma]  = sfhdf_mean
-        sfh_sd_rmse_per_gamma[gamma] = sfh_sd_mean
-
-        print(f"  [gamma_search] gamma={gamma:.2f}  "
-              f"SFHDF={sfhdf_mean:.4f}  SFH-SD={sfh_sd_mean:.4f}  "
-              f"(min expert={min_expert_mean_rmse:.4f})")
-
-        if sfhdf_best is None and sfhdf_mean < min_expert_mean_rmse:
-            sfhdf_best = gamma
-            print(f"  [gamma_search] SFHDF  selected gamma={gamma:.2f}")
-
-        if sfh_sd_best is None and sfh_sd_mean < min_expert_mean_rmse:
-            sfh_sd_best = gamma
-            print(f"  [gamma_search] SFH-SD selected gamma={gamma:.2f}")
-
-        # Early-exit once both methods have found a gamma
-        if sfhdf_best is not None and sfh_sd_best is not None:
-            break
-
-    # Fallback: lowest RMSE gamma if no gamma cleared the expert bar
-    if sfhdf_best is None:
-        sfhdf_best = min(sfhdf_rmse_per_gamma, key=sfhdf_rmse_per_gamma.get)
-        print(f"  [gamma_search] SFHDF  fallback gamma={sfhdf_best:.2f} "
-              f"(RMSE={sfhdf_rmse_per_gamma[sfhdf_best]:.4f})")
-    if sfh_sd_best is None:
-        sfh_sd_best = min(sfh_sd_rmse_per_gamma, key=sfh_sd_rmse_per_gamma.get)
-        print(f"  [gamma_search] SFH-SD fallback gamma={sfh_sd_best:.2f} "
-              f"(RMSE={sfh_sd_rmse_per_gamma[sfh_sd_best]:.4f})")
-
-    return sfhdf_best, sfh_sd_best
-
 
 def main():
     plt.rcParams.update(GlobalValues.plot_params)
@@ -646,24 +342,10 @@ def main():
         # No cross-context data found; fall back to allowing all IDs in this run
         common_ids = {os.path.basename(f)[:3] for f in glob(os.path.join(forecast_dir, "*_forecasts.csv"))}
 
-    # ---- Gamma search for SFHDF and SFH-SD (optional pre-pass, runs after common_ids is known) ----
-    sfhdf_gamma  = 0.2  # default
-    sfh_sd_gamma = 0.2  # default
-    if args.advanced_methods and args.gamma_search:
-        print("Running gamma grid search for SFHDF and SFH-SD...")
-        sfhdf_gamma, sfh_sd_gamma = find_best_sfhdf_gamma(
-            forecast_dir=forecast_dir,
-            data_dir=data_dir,
-            settings_dir=settings_dir,
-            target_col=target_col,
-            eta_str=eta_str,
-            omit_ids=set(args.omit_ids),
-            omit_models=set(args.omit_models),
-            common_ids=common_ids,
-        )
-        print(f"Using SFHDF gamma={sfhdf_gamma:.2f}, SFH-SD gamma={sfh_sd_gamma:.2f} for main loop.")
+    # gamma is fixed in advance (never tuned on the evaluation data).
+    sfhdf_gamma  = 0.2
+    sfh_sd_gamma = 0.2
 
-        
     for file in glob(os.path.join(forecast_dir,"*_forecasts.csv")):
         id_num = os.path.basename(file)[0:3]
         if id_num in args.omit_ids:
@@ -1048,8 +730,9 @@ def main():
             except Exception as e:
                 print(f"Warning: could not save clarke_grid_average_regrets.pdf: {e}")
 
-    print("Generating latex macros...")
-    generate_macros()
+    if args.write_macros:
+        print("Generating latex macros...")
+        generate_macros()
 
 # ====== Plotting Logic from results.py copied here ======
 def plot_moe_regrets(avgrdict, q5rdict, q95rdict, omit = [], start=100, end=-100,**kwargs):

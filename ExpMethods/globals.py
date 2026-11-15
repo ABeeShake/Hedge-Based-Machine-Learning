@@ -1,5 +1,11 @@
 
 class GlobalValues:
+    # Name (as written by process_results.py) of the aggregator reported as "HBML"
+    # in every table, figure and macro. Change it here only, e.g. to "HBML-FS".
+    primary_hbml = "HBML-SFHDF"
+    # Aggregator variants that are never shown as separate rows in the main tables.
+    hbml_variants = ["HBML (c)", "HBML (d)", "HBML (fd)", "HBML-SFH", "HBML-SFHDF",
+                     "HBML-SFH-SD", "HBML-SFH-Meta", "HBML-FS"]
     torch_models = [
         "lstm".casefold(), 
         "node".casefold(),
