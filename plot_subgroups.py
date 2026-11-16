@@ -211,7 +211,7 @@ if __name__ == "__main__":
     os.makedirs(out_dir, exist_ok=True)
     
     rmse_path = "rmse.csv"
-    for cand in ["./cgmacros/rmse.csv", "../cgmacros/rmse.csv", "./rmse.csv", "../rmse.csv"]:
+    for cand in ["./Outputs/cgmacros/rmse.csv", "./cgmacros/rmse.csv", "../cgmacros/rmse.csv", "./rmse.csv", "../rmse.csv"]:
         if os.path.exists(cand):
             rmse_path = cand
             break

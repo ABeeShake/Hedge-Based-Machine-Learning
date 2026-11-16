@@ -281,7 +281,7 @@ def main():
                     help="Skip a condition unless this share of its forecast files comes from the current engine.")
     ap.add_argument("--allow-legacy", action="store_true", help="Also use forecasts older than the fast-engine cutoff.")
     ap.add_argument("--overwrite", action="store_true")
-    ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1))
+    ap.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", min(8, max(1, (os.cpu_count() or 2) - 1)))))
     ap.add_argument("--report-only", action="store_true")
     ap.add_argument("--drop-mismatched", action="store_true",
                     help="Leave out conditions whose forecasts do not reproduce the HBML means in the manuscript tables.")

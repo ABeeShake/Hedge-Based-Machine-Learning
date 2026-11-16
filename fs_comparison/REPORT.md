@@ -2,59 +2,63 @@
 
 RMSE is per participant, mg/dL. Ratios are variant RMSE / current HBML-SFHDF RMSE (below 1 = better than the current algorithm).
 
-**Left out of this report** because the forecasts in this folder do not reproduce the HBML means in `overleaf/tables/rmse_pivot_mean.csv` (stale or partial copy; run these where the outputs are complete): cgmacros h=2 c=12, cgmacros h=2 c=24, cgmacros h=2 c=6, cgmacros h=2 c=full, cgmacros h=5 c=12, cgmacros h=5 c=6.
-
 ## Average over conditions
 
 | dataset | variant | conditions | mean % change in RMSE vs current | conditions where it beats current |
 |---|---|---|---|---|
-| cgmacros | alg1_fs_c0.001 | 6 | +0.36 | 3 |
-| cgmacros | alg1_fs_c0.01 | 6 | +0.37 | 3 |
-| cgmacros | alg1_fs_c0.05 | 6 | +0.27 | 4 |
-| cgmacros | alg1_fs_d | 6 | +0.34 | 4 |
-| cgmacros | alg1_fs_fd | 6 | +0.20 | 2 |
-| cgmacros | alg1_noshare | 6 | +1.56 | 1 |
-| cgmacros | cum_decaymax | 6 | -0.06 | 5 |
-| cgmacros | current | 6 | +0.00 | 0 |
-| cgmacros | uniform | 6 | +2.94 | 0 |
-| weinstock | alg1_fs_c0.001 | 12 | +2.91 | 4 |
-| weinstock | alg1_fs_c0.01 | 12 | +2.77 | 4 |
-| weinstock | alg1_fs_c0.05 | 12 | +1.92 | 4 |
-| weinstock | alg1_fs_d | 12 | +2.83 | 4 |
-| weinstock | alg1_fs_fd | 12 | +2.04 | 4 |
-| weinstock | alg1_noshare | 12 | +0.08 | 4 |
-| weinstock | cum_decaymax | 12 | -0.08 | 12 |
+| cgmacros | alg1_fs_c0.001 | 12 | +2.25 | 4 |
+| cgmacros | alg1_fs_c0.01 | 12 | +1.70 | 5 |
+| cgmacros | alg1_fs_c0.05 | 12 | +0.55 | 8 |
+| cgmacros | alg1_fs_d | 12 | +2.17 | 4 |
+| cgmacros | alg1_fs_fd | 12 | +2.06 | 2 |
+| cgmacros | alg1_noshare | 12 | +3.05 | 1 |
+| cgmacros | cum_decaymax | 12 | -0.06 | 11 |
+| cgmacros | current | 12 | +0.00 | 0 |
+| cgmacros | uniform | 12 | +0.94 | 5 |
+| weinstock | alg1_fs_c0.001 | 12 | +3.05 | 4 |
+| weinstock | alg1_fs_c0.01 | 12 | +2.91 | 3 |
+| weinstock | alg1_fs_c0.05 | 12 | +1.89 | 3 |
+| weinstock | alg1_fs_d | 12 | +2.96 | 4 |
+| weinstock | alg1_fs_fd | 12 | +2.09 | 4 |
+| weinstock | alg1_noshare | 12 | +0.06 | 5 |
+| weinstock | cum_decaymax | 12 | -0.07 | 12 |
 | weinstock | current | 12 | +0.00 | 0 |
-| weinstock | uniform | 12 | +4.96 | 3 |
+| weinstock | uniform | 12 | +3.85 | 3 |
 
 ## Held-out choice (odd / even participant IDs)
 
 | dataset | chosen on | chosen variant | ratio on the selection half | ratio on the held-out half |
 |---|---|---|---|---|
-| cgmacros | odd | cum_decaymax | 0.9994 | 0.9991 |
-| cgmacros | even | alg1_fs_fd | 0.9974 | 1.0041 |
-| weinstock | odd | cum_decaymax | 0.9993 | 0.9991 |
-| weinstock | even | cum_decaymax | 0.9991 | 0.9993 |
+| cgmacros | odd | alg1_fs_c0.05 | 0.9994 | 0.9986 |
+| cgmacros | even | alg1_fs_c0.05 | 0.9986 | 0.9994 |
+| weinstock | odd | alg1_noshare | 0.9992 | 1.0015 |
+| weinstock | even | cum_decaymax | 0.9992 | 0.9994 |
 
 ## Per condition (mean RMSE)
 
 | dataset | horizon | context | n | best expert | current | alg1_fs_fd | alg1_noshare | alg1_fs_d | alg1_fs_c0.001 | alg1_fs_c0.01 | alg1_fs_c0.05 | cum_decaymax | uniform |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| cgmacros | half | 6 | 44 | 22.59 | 21.93 | 21.93 | 22.14 | 21.67 | 21.65 | 21.58 | 21.60 | 21.87 | 22.54 |
-| cgmacros | half | 12 | 44 | 22.04 | 21.30 | 21.37 | 21.74 | 21.23 | 21.24 | 21.17 | 21.15 | 21.28 | 21.70 |
-| cgmacros | half | 24 | 44 | 21.34 | 20.75 | 20.85 | 21.27 | 20.75 | 20.77 | 20.84 | 20.81 | 20.74 | 21.01 |
-| cgmacros | half | full | 44 | 20.74 | 20.44 | 20.55 | 21.24 | 20.53 | 20.55 | 20.47 | 20.42 | 20.43 | 20.49 |
-| cgmacros | 5 | 24 | 44 | 38.08 | 37.87 | 36.66 | 37.12 | 37.28 | 37.32 | 37.38 | 37.21 | 37.84 | 38.36 |
+| cgmacros | half | 6 | 44 | 22.59 | 21.95 | 21.92 | 22.15 | 21.69 | 21.70 | 21.65 | 21.47 | 21.92 | 21.40 |
+| cgmacros | half | 12 | 44 | 22.04 | 21.32 | 21.39 | 21.75 | 21.27 | 21.28 | 21.25 | 21.11 | 21.30 | 21.20 |
+| cgmacros | half | 24 | 44 | 21.34 | 20.75 | 20.83 | 21.26 | 20.80 | 20.82 | 20.88 | 20.80 | 20.74 | 20.79 |
+| cgmacros | half | full | 44 | 20.74 | 20.44 | 20.56 | 21.24 | 20.52 | 20.55 | 20.47 | 20.41 | 20.43 | 20.46 |
+| cgmacros | 2 | 6 | 44 | 39.76 | 39.72 | 41.34 | 42.38 | 40.49 | 40.53 | 39.57 | 38.56 | 39.67 | 37.58 |
+| cgmacros | 2 | 12 | 44 | 36.68 | 37.35 | 37.85 | 38.60 | 37.27 | 37.32 | 36.79 | 36.03 | 37.32 | 35.32 |
+| cgmacros | 2 | 24 | 44 | 34.70 | 35.57 | 36.08 | 35.98 | 36.12 | 36.19 | 35.75 | 35.05 | 35.54 | 34.36 |
+| cgmacros | 2 | full | 44 | 32.12 | 32.62 | 34.25 | 34.49 | 34.35 | 34.44 | 34.22 | 33.89 | 32.59 | 33.60 |
+| cgmacros | 5 | 6 | 44 | 41.14 | 44.35 | 47.04 | 46.94 | 49.66 | 49.59 | 49.66 | 48.69 | 44.33 | 49.91 |
+| cgmacros | 5 | 12 | 44 | 39.48 | 40.35 | 42.24 | 41.81 | 41.30 | 41.39 | 40.85 | 40.16 | 40.30 | 40.53 |
+| cgmacros | 5 | 24 | 44 | 36.75 | 37.53 | 36.69 | 37.12 | 37.21 | 37.24 | 37.29 | 37.13 | 37.50 | 38.33 |
 | cgmacros | 5 | full | 44 | 32.72 | 34.20 | 35.24 | 34.85 | 35.80 | 35.75 | 35.96 | 36.01 | 34.25 | 37.66 |
-| weinstock | half | 6 | 200 | 35.05 | 34.43 | 34.19 | 34.58 | 34.08 | 34.05 | 34.08 | 34.26 | 34.34 | 38.60 |
-| weinstock | half | 12 | 200 | 34.61 | 33.77 | 33.62 | 33.83 | 33.58 | 33.56 | 33.57 | 33.75 | 33.72 | 37.22 |
-| weinstock | half | 24 | 200 | 34.45 | 33.38 | 33.23 | 33.39 | 33.28 | 33.30 | 33.33 | 33.24 | 33.34 | 36.71 |
-| weinstock | half | full | 200 | 33.95 | 32.89 | 32.80 | 33.02 | 32.80 | 32.79 | 32.85 | 32.95 | 32.86 | 35.78 |
-| weinstock | 2 | 6 | 200 | 72.10 | 73.42 | 77.98 | 74.18 | 80.09 | 80.24 | 80.23 | 78.94 | 73.38 | 76.34 |
-| weinstock | 2 | 12 | 200 | 72.43 | 73.18 | 76.02 | 73.19 | 76.57 | 76.61 | 76.32 | 75.27 | 73.14 | 72.85 |
-| weinstock | 2 | 24 | 200 | 69.84 | 71.40 | 73.04 | 71.89 | 73.48 | 73.57 | 73.34 | 72.38 | 71.36 | 71.14 |
-| weinstock | 2 | full | 200 | 67.50 | 68.88 | 70.32 | 69.45 | 70.74 | 70.87 | 70.86 | 70.24 | 68.85 | 69.62 |
-| weinstock | 5 | 6 | 200 | 99.59 | 104.18 | 111.51 | 104.02 | 113.71 | 113.57 | 113.31 | 111.37 | 104.13 | 114.37 |
-| weinstock | 5 | 12 | 200 | 99.24 | 104.09 | 107.24 | 103.76 | 107.39 | 107.53 | 106.49 | 104.43 | 104.01 | 103.60 |
-| weinstock | 5 | 24 | 200 | 91.40 | 96.06 | 96.39 | 94.93 | 97.38 | 97.52 | 97.21 | 95.97 | 96.00 | 96.46 |
-| weinstock | 5 | full | 200 | 86.73 | 89.19 | 90.46 | 88.29 | 91.92 | 92.24 | 92.46 | 91.86 | 89.15 | 93.14 |
+| weinstock | half | 6 | 200 | 35.05 | 34.47 | 34.16 | 34.57 | 34.25 | 34.25 | 34.36 | 34.26 | 34.42 | 36.34 |
+| weinstock | half | 12 | 200 | 34.61 | 33.78 | 33.65 | 33.80 | 33.69 | 33.67 | 33.74 | 33.79 | 33.75 | 36.23 |
+| weinstock | half | 24 | 200 | 34.45 | 33.39 | 33.25 | 33.38 | 33.37 | 33.39 | 33.42 | 33.22 | 33.36 | 36.19 |
+| weinstock | half | full | 200 | 33.95 | 32.89 | 32.80 | 33.01 | 32.83 | 32.81 | 32.87 | 32.94 | 32.87 | 35.69 |
+| weinstock | 2 | 6 | 200 | 72.10 | 73.46 | 78.47 | 74.29 | 80.38 | 80.53 | 80.28 | 78.71 | 73.42 | 75.20 |
+| weinstock | 2 | 12 | 200 | 72.43 | 73.19 | 76.06 | 73.24 | 76.63 | 76.67 | 76.35 | 75.25 | 73.15 | 72.71 |
+| weinstock | 2 | 24 | 200 | 69.84 | 71.40 | 73.05 | 71.88 | 73.50 | 73.59 | 73.34 | 72.36 | 71.36 | 71.08 |
+| weinstock | 2 | full | 200 | 67.50 | 68.88 | 70.34 | 69.50 | 70.73 | 70.86 | 70.83 | 70.21 | 68.86 | 69.58 |
+| weinstock | 5 | 6 | 200 | 99.13 | 103.68 | 111.15 | 103.53 | 113.35 | 113.23 | 112.95 | 111.00 | 103.63 | 113.93 |
+| weinstock | 5 | 12 | 200 | 99.24 | 104.08 | 107.11 | 103.77 | 107.36 | 107.47 | 106.46 | 104.40 | 104.00 | 103.57 |
+| weinstock | 5 | 24 | 200 | 91.40 | 95.99 | 96.35 | 94.76 | 97.35 | 97.48 | 97.18 | 95.93 | 95.93 | 96.44 |
+| weinstock | 5 | full | 200 | 86.73 | 89.12 | 90.42 | 88.24 | 91.89 | 92.20 | 92.45 | 91.84 | 89.08 | 93.14 |

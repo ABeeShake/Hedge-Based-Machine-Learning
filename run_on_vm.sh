@@ -32,6 +32,7 @@ echo "== 2/7 Fixed-Share comparison =="
 echo "== 3/7 RMSE tables =="
 "${PY}" generate_figures.py --rmse_only --median
 "${PY}" generate_figures.py --rmse_only
+"${PY}" compare_fixed_share.py --report-only --drop-mismatched
 
 echo "== 4/7 paired statistics =="
 "${PY}" calculate_statistics.py

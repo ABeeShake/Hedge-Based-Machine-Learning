@@ -146,7 +146,7 @@ def _one_participant(task):
     return rec
 
 
-WORKERS = max(1, (os.cpu_count() or 2) - 1)
+WORKERS = int(os.environ.get("SLURM_CPUS_PER_TASK", min(8, max(1, (os.cpu_count() or 2) - 1))))
 
 
 def evaluate_condition(ds, h, ctx):

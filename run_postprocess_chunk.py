@@ -96,8 +96,25 @@ def main():
             else:
                 print(f"[Pending] Condition [{cond['condition_idx']}] not yet complete, skipping post-processing.")
     elif args.all:
-        for cond in registry:
-            process_condition(cond, overwrite=args.overwrite, plot_ceg=args.plot_ceg)
+        from concurrent.futures import ThreadPoolExecutor
+        import pandas as pd
+        workers = min(8, max(1, int(os.environ.get("SLURM_CPUS_PER_TASK", 4))))
+        if workers > 1:
+            print(f"[Batch] Running all {len(registry)} conditions across {workers} workers...")
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                list(ex.map(lambda c: process_condition(c, overwrite=args.overwrite, plot_ceg=args.plot_ceg), registry))
+        else:
+            for cond in registry:
+                process_condition(cond, overwrite=args.overwrite, plot_ceg=args.plot_ceg)
+        # Consolidate race-free per-condition rmse.csv and maxae.csv into dataset-level files
+        for ds in ("cgmacros", "weinstock"):
+            for metric in ("rmse", "maxae"):
+                parts = sorted(glob.glob(os.path.join("Outputs", ds, "h-*", "context-*", f"{metric}.csv")))
+                if parts:
+                    df = pd.concat([pd.read_csv(p) for p in parts], ignore_index=True)
+                    dedup_cols = [c for c in ["dataset", "horizon", "context", "eta", "model", "id"] if c in df.columns]
+                    df = df.drop_duplicates(subset=dedup_cols, keep="last")
+                    df.to_csv(os.path.join("Outputs", ds, f"{metric}.csv"), index=False)
     else:
         print("Please specify --condition_idx <0-23>, --all_completed, or --all.")
 
