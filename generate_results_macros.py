@@ -51,7 +51,8 @@ CTX_TEXT = {"6": "6-hour", "12": "12-hour", "24": "24-hour", "full": "full-histo
 STATUS_NAME = {"non-T2D": "NoDiabetes", "pre-T2D": "Prediabetes", "T2D": "TypeTwo"}
 MACRO_PREFIXES = ("RMSE", "CEG", "Wilcoxon", "Ttest", "PctImproved", "PctWorse", "NImproved", "NWorse", "NTotal",
                   "PairedDiff", "BestExpert", "StatAll", "StatWeinstock", "StatCgmacros", "StatCGMacros",
-                  "Baseline", "Vol[A-Z]", "Timing", "NWeinstock", "NCgmacros", "NCGMacros", "NConfigs", "NTotalParticipants")
+                  "Baseline", "Vol[A-Z]", "Timing", "NWeinstock", "NCgmacros", "NCGMacros", "NConfigs", "NTotalParticipants",
+                  "Ablation", "GammaSens", "NExpertsWinning", "TopWinner", "SecondWinner")
 
 
 def clean_name(name):
@@ -409,6 +410,207 @@ def generate_macros(strict=False, quiet=False):
                 M.num("TimingStepPctOfInterval", float(mm.group(1)) / 300.0 * 100.0, 1)
             if stem == "TimingHedgeUpdate":
                 M.num("TimingHedgeUpdateMicroseconds", float(mm.group(1)) * 1e6, 1)
+
+    # 9. Per-participant hindsight oracle and winner heterogeneity
+    M.section("Per-participant hindsight oracle and winner heterogeneity")
+    rows = need("rmse_participant.csv")
+    if rows:
+        from collections import Counter, defaultdict
+        import math
+        by_cfg_p = defaultdict(lambda: defaultdict(dict))
+        for r in rows:
+            ds_k = dataset_label(r["dataset"])
+            hz_k = horizon_label(r["horizon"])
+            c_k = str(r["context"]).strip().lower()
+            cname = CTX_NAME.get(c_k, "Full")
+            v = to_float(r.get("rmse", ""))
+            if v is not None:
+                by_cfg_p[(ds_k, hz_k, cname)][str(r["id"]).zfill(3)][clean_name(r["model"])] = v
+        exps_list = ["ARIMA", "ETS", "NHITS", "NODE", "XGBoost"]
+        n_win_all = []
+        rel_diff_30m = []
+        for (ds_k, hz_k, cname), pmap in sorted(by_cfg_p.items()):
+            key = f"{ds_k}{hz_k}{cname}"
+            valid_p = [m for m in pmap.values() if "HBML" in m and all(e in m for e in exps_list)]
+            if not valid_p:
+                continue
+            n_p = len(valid_p)
+            hb_vals = [m["HBML"] for m in valid_p]
+            or_vals = [min(m[e] for e in exps_list) for m in valid_p]
+            wo_vals = [max(m[e] for e in exps_list) for m in valid_p]
+            hb_m = sum(hb_vals) / n_p
+            or_m = sum(or_vals) / n_p
+            wo_m = sum(wo_vals) / n_p
+            or_sd = math.sqrt(sum((x - or_m) ** 2 for x in or_vals) / max(n_p - 1, 1))
+            wo_sd = math.sqrt(sum((x - wo_m) ** 2 for x in wo_vals) / max(n_p - 1, 1))
+            M.num(f"RMSEOracleMean{key}", or_m)
+            M.num(f"RMSEOracleSd{key}", or_sd)
+            M.num(f"RMSEWorstExpertMean{key}", wo_m)
+            M.num(f"RMSEWorstExpertSd{key}", wo_sd)
+            M.num(f"RMSEOracleDiff{key}", hb_m - or_m)
+            rel_d = (hb_m - or_m) / or_m * 100.0
+            M.num(f"RMSEOracleRelDiff{key}", rel_d, 1)
+            if hz_k == "ThirtyMin":
+                rel_diff_30m.append(rel_d)
+            winners = Counter(min(exps_list, key=lambda e: m[e]) for m in valid_p)
+            n_win_all.append(len(winners))
+            M.add(f"NExpertsWinning{key}", len(winners))
+            most = winners.most_common()
+            if len(most) >= 1:
+                M.add(f"TopWinnerExpert{key}", most[0][0])
+                M.add(f"TopWinnerCount{key}", most[0][1])
+                M.num(f"TopWinnerPct{key}", most[0][1] / n_p * 100.0, 1)
+            if len(most) >= 2:
+                M.add(f"SecondWinnerExpert{key}", most[1][0])
+                M.add(f"SecondWinnerCount{key}", most[1][1])
+                M.num(f"SecondWinnerPct{key}", most[1][1] / n_p * 100.0, 1)
+        if n_win_all:
+            M.add("NExpertsWinningMin", min(n_win_all))
+            M.add("NExpertsWinningMax", max(n_win_all))
+        if rel_diff_30m:
+            M.num("RMSEOracleRelDiffThirtyMinMin", min(rel_diff_30m), 1)
+            M.num("RMSEOracleRelDiffThirtyMinMax", max(rel_diff_30m), 1)
+
+    # 10. Aggregator and Fixed-Share ablation + gamma sensitivity
+    M.section("Aggregator and Fixed-Share ablation")
+    fs_path = os.path.join(BASE_DIR, "fs_comparison", "summary.csv")
+    if os.path.exists(fs_path):
+        with open(fs_path, newline="") as f:
+            fs_rows = list(csv.DictReader(f))
+        var_map = {
+            "current": "Primary",
+            "cum_decaymax": "CumDecayMax",
+            "alg1_noshare": "RecNoShare",
+            "alg1_fs_fd": "FSFastDecay",
+            "alg1_fs_d": "FSDecay",
+            "alg1_fs_c0.001": "FSConstLow",
+            "alg1_fs_c0.01": "FSConstMid",
+            "alg1_fs_c0.05": "FSConstHigh",
+            "uniform": "Uniform",
+        }
+        from collections import defaultdict
+        by_ds_v = defaultdict(list)
+        wins_ds_v = defaultdict(int)
+        table_cells = defaultdict(dict)
+        for r in fs_rows:
+            vcode = var_map.get(r["variant"])
+            if not vcode:
+                continue
+            ds_k = dataset_label(r["dataset"])
+            hz_k = horizon_label(r["horizon"])
+            cname = CTX_NAME.get(str(r["context"]).strip().lower(), "Full")
+            key = f"{vcode}{ds_k}{hz_k}{cname}"
+            m_rmse = to_float(r.get("mean_rmse", ""))
+            pct_ch = to_float(r.get("pct_change_vs_current", ""))
+            delta_c = to_float(r.get("delta_vs_current", ""))
+            M.num(f"AblationRMSE{key}", m_rmse)
+            if pct_ch is not None:
+                M.add(f"AblationRelChange{key}", f"{pct_ch:+.2f}")
+                by_ds_v[(ds_k, vcode)].append(pct_ch)
+            if delta_c is not None and delta_c > 0:
+                wins_ds_v[(ds_k, vcode)] += 1
+            if cname == "Full" and m_rmse is not None:
+                table_cells[(ds_k, vcode)][hz_k] = m_rmse
+        for (ds_k, vcode), vals in sorted(by_ds_v.items()):
+            mean_ch = sum(vals) / len(vals)
+            M.add(f"AblationMeanRelChange{vcode}{ds_k}", f"{mean_ch:+.2f}")
+            M.num(f"AblationAbsMeanRelChange{vcode}{ds_k}", abs(mean_ch), 2)
+            M.add(f"AblationNWins{vcode}{ds_k}", wins_ds_v[(ds_k, vcode)])
+        # Write overleaf/tables/table_aggregator_ablation.tex
+        ablation_order = [
+            ("Primary", "HBML-SFHDF (primary: cumulative, EMA scale, $\\alpha=0$)"),
+            ("CumDecayMax", "Cumulative Scale-Free Hedge, decayed-max scale ($\\alpha=0$)"),
+            ("RecNoShare", "Recursive Scale-Free Hedge, decayed-max scale ($\\alpha=0$)"),
+            ("FSFastDecay", "HBML-FS (recursive Fixed-Share, $\\alpha_n = (n+1)^{-2}$)"),
+            ("FSDecay", "Recursive Fixed-Share ($\\alpha_n = (n+1)^{-1}$)"),
+            ("FSConstLow", "Recursive Fixed-Share (constant $\\alpha = 0.001$)"),
+            ("FSConstMid", "Recursive Fixed-Share (constant $\\alpha = 0.01$)"),
+            ("FSConstHigh", "Recursive Fixed-Share (constant $\\alpha = 0.05$)"),
+            ("Uniform", "Equal-weight uniform ensemble ($p_{t,k} = 1/K$)"),
+        ]
+        t_lines = [
+            r"\begin{table*}[t]",
+            r"\centering",
+            r"\scriptsize",
+            r"\begin{tabular}{llccccc}",
+            r"\toprule",
+            r"Dataset & Aggregator variant & 0.5 hr (Full) & 2 hr (Full) & 5 hr (Full) & Mean $\Delta\%$ (12 configs) & Wins / 12 \\",
+            r"\midrule",
+        ]
+        for ds_idx, (ds_k, ds_disp) in enumerate([("Weinstock", "Weinstock 2016"), ("Cgmacros", "CGMacros")]):
+            if ds_idx > 0:
+                t_lines.append(r"\midrule")
+            for vcode, vlabel in ablation_order:
+                c30 = table_cells[(ds_k, vcode)].get("ThirtyMin")
+                c2h = table_cells[(ds_k, vcode)].get("TwoHour")
+                c5h = table_cells[(ds_k, vcode)].get("FiveHour")
+                mch = M.defs.get(f"AblationMeanRelChange{vcode}{ds_k}", "---")
+                wns = "---" if vcode == "Primary" else f"{M.defs.get(f'AblationNWins{vcode}{ds_k}', '0')}/12"
+                s30 = f"{c30:.2f}" if c30 is not None else "---"
+                s2h = f"{c2h:.2f}" if c2h is not None else "---"
+                s5h = f"{c5h:.2f}" if c5h is not None else "---"
+                t_lines.append(f"{ds_disp} & {vlabel} & {s30} & {s2h} & {s5h} & {mch}\\% & {wns} \\\\")
+        t_lines += [
+            r"\bottomrule",
+            r"\end{tabular}",
+            r"\caption{\textbf{Ablation across online aggregation rules, loss-scale estimators, and Fixed-Share mixing schedules.} "
+            r"All variants aggregate the identical constituent expert forecasts over the identical participant cohorts and evaluation windows. "
+            r"Columns 3--5 report cohort-mean participant-level RMSE (mg/dL) in the full-history configuration at the 30-minute, 2-hour, and 5-hour horizons. "
+            r"``Mean $\Delta\%$ (12 configs)'' is the mean percentage change in RMSE relative to the primary HBML-SFHDF algorithm across all 12 horizon $\times$ context configurations per dataset (negative values indicate lower error than HBML-SFHDF; positive values indicate higher error). "
+            r"``Wins / 12'' counts configurations in which the variant achieved lower cohort-mean RMSE than HBML-SFHDF.}",
+            r"\label{tab:aggregator_ablation}",
+            r"\end{table*}",
+        ]
+        with open(os.path.join(TABLES_DIR, "table_aggregator_ablation.tex"), "w", encoding="utf-8") as f:
+            f.write("\n".join(t_lines) + "\n")
+
+    rows = need("hbml_ceg_comparison.csv")
+    if rows:
+        ceg_vmap = {
+            "HBML-SFHDF": "SFHDF",
+            "HBML-SFH": "SFH",
+            "HBML-SFH-SD": "SFHSD",
+            "HBML-SFH-Meta": "SFHMeta",
+            "HBML-FS": "FS",
+        }
+        for r in rows:
+            vcode = ceg_vmap.get(str(r.get("model", "")).strip())
+            if not vcode:
+                continue
+            ds_k = dataset_label(r["dataset"])
+            hz_k = horizon_label(r["horizon"])
+            cname = CTX_NAME.get(str(r["context"]).strip().lower(), "Full")
+            ab = to_float(r.get("A+Bpct", ""))
+            ap = to_float(r.get("Apct", ""))
+            M.num(f"CEGVariant{vcode}{ds_k}{hz_k}{cname}AB", ab)
+            M.num(f"CEGVariant{vcode}{ds_k}{hz_k}{cname}A", ap)
+
+    rows = need("gamma_sensitivity.csv")
+    if rows:
+        from collections import defaultdict
+        by_gcfg = defaultdict(dict)
+        n_pat = None
+        for r in rows:
+            g_val = to_float(r.get("gamma", ""))
+            m_val = to_float(r.get("mean_rmse", ""))
+            if g_val is not None and m_val is not None:
+                by_gcfg[(r["dataset"], r["horizon"], r["context"])][g_val] = m_val
+            if n_pat is None and r.get("n_patients"):
+                n_pat = int(float(r["n_patients"]))
+        if n_pat is not None:
+            M.add("GammaSensNPatients", n_pat)
+        reds, spans = [], []
+        for gmap in by_gcfg.values():
+            if 0.0 in gmap and 0.2 in gmap:
+                reds.append((gmap[0.0] - gmap[0.2]) / gmap[0.0] * 100.0)
+                pos = [v for k, v in gmap.items() if k >= 0.05]
+                if pos:
+                    spans.append((max(pos) - min(pos)) / gmap[0.2] * 100.0)
+        if reds:
+            M.num("GammaSensZeroVsDefaultMinPct", min(reds), 1)
+            M.num("GammaSensZeroVsDefaultMaxPct", max(reds), 1)
+        if spans:
+            M.num("GammaSensPosSpanMaxPct", max(spans), 2)
 
     # Macros used in the manuscript
     used = set()

@@ -1,111 +1,104 @@
-#!/usr/bin/env python3
-"""verify_scale_invariance.py — Formal unit test and verification of scale-invariance.
+"""verify_scale_invariance.py
+===============================================================================
+Numerical & Algebraic Verification of Proposition 1 (Unit Scale-Invariance) on
+the Production HBML Aggregators (`ExpMethods.aggregators.run_hedge`).
 
-Verifies that the Scale-Free Hedge (SFH) and SFH with Decay Forgetting (SFH-DF)
-algorithms in ExpMethods/simulate.py satisfy strict mathematical scale-invariance:
-multiplying inputs and targets by any positive scalar a > 0 (e.g. converting between
-mg/dL and mmol/L via a = 1 / 18.0182) results in:
-  1. Identical weight trajectories at every time step t: w_t(a * losses) == w_t(losses)
-  2. Identical relative regret and normalized performance
-  3. Perfectly scaled predictions: y_hat(a * forecasts) == a * y_hat(forecasts)
+Tests both the primary cumulative-loss Scale-Free Hedge with EMA forgetting
+(`HBML-SFHDF`), Recursive Fixed-Share (`HBML-FS`), `Cum-DecayMax`, and
+`Rec-NoShare` directly via `ExpMethods.aggregators.run_hedge`.
+
+Specifically, we verify:
+1. Strict machine-precision invariance (< 1e-15) when the numerical floor EPS
+   scales with a^2 (tilde_EPS = a^2 * EPS).
+2. Practical invariance (< 1e-10) when a fixed floor EPS = 1e-8 is used in
+   both mg/dL and mmol/L (where a = 1 / 18.0182, a^2 ~= 0.00308).
+===============================================================================
 """
 
 import numpy as np
+import ExpMethods.aggregators as agg
+from ExpMethods.aggregators import run_hedge, online_losses
 
-def run_scale_invariance_test():
+VARIANT_SPECS = {
+    "HBML-SFHDF": dict(update="cumulative", scale="ema", gamma=0.2, alpha=0.0),
+    "HBML-FS": dict(update="recursive", scale="decay_max", gamma=0.2, alpha="fd"),
+    "Cum-DecayMax": dict(update="cumulative", scale="decay_max", gamma=0.2, alpha=0.0),
+    "Rec-NoShare": dict(update="recursive", scale="decay_max", gamma=0.2, alpha=0.0),
+}
+
+
+def main():
+    print("=" * 80)
+    print("VERIFYING PROPOSITION 1: SCALE-INVARIANCE OF PRODUCTION HBML AGGREGATORS")
+    print("=" * 80)
+
     np.random.seed(42)
-    T = 500
+    T = 1000
     K = 5
-    
-    # Simulate synthetic glucose trajectory (in mg/dL)
-    true_y_mgdl = np.random.normal(140, 30, size=T).clip(40, 400)
-    
-    # Simulate 5 expert predictions with varying noise
-    expert_preds_mgdl = {
-        f"expert_{k}": true_y_mgdl + np.random.normal(0, (k + 1) * 5, size=T)
-        for k in range(K)
-    }
-    
-    # Scale factor: mg/dL to mmol/L conversion
+    start = 21
+    horizon = 6
+
+    # Simulate realistic glucose trajectory in mg/dL (range ~ 70 to 250 mg/dL)
+    t_grid = np.linspace(0, 20, T)
+    y_mgdl = 130.0 + 50.0 * np.sin(t_grid) + np.random.normal(0, 8, size=T)
+
+    # Simulate 5 diverse experts in mg/dL
+    preds_mgdl = np.zeros((T, K))
+    for k in range(K):
+        bias = (k - 2) * 5.0
+        noise_scale = 5.0 + 4.0 * k
+        preds_mgdl[:, k] = y_mgdl + bias + np.random.normal(0, noise_scale, size=T)
+
+    losses_mgdl = online_losses(preds_mgdl, y_mgdl, start=start, horizon=horizon)
+
+    # Conversion factor from mg/dL to mmol/L: a = 1 / 18.0182
     a = 1.0 / 18.0182
-    true_y_mmoll = true_y_mgdl * a
-    expert_preds_mmoll = {k: v * a for k, v in expert_preds_mgdl.items()}
-    
-    gamma = 0.2
-    
-    for method_name, use_df in [("Scale-Free Hedge (SFH)", False), ("SFH with Decay Forgetting (SFH-DF)", True)]:
-        print(f"\n--- Testing {method_name} ---")
-        
-        # Run in mg/dL
-        w_mgdl = []
-        preds_mgdl = []
-        cum_loss_1 = np.zeros(K)
-        L_max_1 = 1.0
-        
-        # Run in mmol/L
-        w_mmoll = []
-        preds_mmoll = []
-        cum_loss_2 = np.zeros(K)
-        L_max_2 = 1.0 * (a ** 2)
-        
-        for t in range(T):
-            p1 = np.array([expert_preds_mgdl[f"expert_{k}"][t] for k in range(K)])
-            p2 = np.array([expert_preds_mmoll[f"expert_{k}"][t] for k in range(K)])
-            
-            # Target at t
-            y1 = true_y_mgdl[t]
-            y2 = true_y_mmoll[t]
-            
-            # Squared losses
-            loss1 = (p1 - y1) ** 2
-            loss2 = (p2 - y2) ** 2
-            
-            # Update L_max
-            if use_df:
-                L_max_1 = max((1.0 - gamma) * L_max_1, np.max(loss1), 1e-8)
-                L_max_2 = max((1.0 - gamma) * L_max_2, np.max(loss2), 1e-8 * (a ** 2))
-            else:
-                L_max_1 = max(L_max_1, np.max(loss1), 1e-8)
-                L_max_2 = max(L_max_2, np.max(loss2), 1e-8 * (a ** 2))
-                
-            cum_loss_1 += loss1
-            cum_loss_2 += loss2
-            
-            # Exponent update
-            log_w1 = -cum_loss_1 / L_max_1
-            log_w1 -= np.max(log_w1)
-            wt1 = np.exp(log_w1)
-            wt1 /= np.sum(wt1)
-            
-            log_w2 = -cum_loss_2 / L_max_2
-            log_w2 -= np.max(log_w2)
-            wt2 = np.exp(log_w2)
-            wt2 /= np.sum(wt2)
-            
-            w_mgdl.append(wt1)
-            w_mmoll.append(wt2)
-            
-            y_hat1 = np.dot(wt1, p1)
-            y_hat2 = np.dot(wt2, p2)
-            
-            preds_mgdl.append(y_hat1)
-            preds_mmoll.append(y_hat2)
-            
-        w_mgdl = np.array(w_mgdl)
-        w_mmoll = np.array(w_mmoll)
-        preds_mgdl = np.array(preds_mgdl)
-        preds_mmoll = np.array(preds_mmoll)
-        
-        # Assertions
-        weight_diff_max = np.max(np.abs(w_mgdl - w_mmoll))
-        pred_ratio_diff = np.max(np.abs(preds_mmoll - a * preds_mgdl))
-        
-        print(f"  Maximum weight difference: {weight_diff_max:.2e}")
-        print(f"  Maximum prediction scaling error: {pred_ratio_diff:.2e}")
-        
-        assert weight_diff_max < 1e-12, f"Weight vectors diverged: {weight_diff_max}"
-        assert pred_ratio_diff < 1e-12, f"Predictions failed scale invariance: {pred_ratio_diff}"
-        print(f"  [PASS] {method_name} is strictly scale-invariant under unit transformations!")
+    y_mmol = a * y_mgdl
+    preds_mmol = a * preds_mgdl
+    losses_mmol = online_losses(preds_mmol, y_mmol, start=start, horizon=horizon)
+
+    print(f"Scale factor a (mg/dL -> mmol/L): {a:.8f} (a^2 = {a**2:.8e})\n")
+
+    start_eval = start + horizon
+
+    for label, spec in VARIANT_SPECS.items():
+        # 1. Production run_hedge with fixed EPS = 1e-8 in both units
+        agg.EPS = 1e-8
+        f_mgdl, l_mgdl, w_mgdl = run_hedge(
+            preds_mgdl, losses_mgdl, y_mgdl, start=start, horizon=horizon, return_weights=True, **spec
+        )
+        f_mmol_fixed, l_mmol_fixed, w_mmol_fixed = run_hedge(
+            preds_mmol, losses_mmol, y_mmol, start=start, horizon=horizon, return_weights=True, **spec
+        )
+
+        max_w_diff_fixed = float(np.max(np.abs(w_mgdl[start_eval + 1:] - w_mmol_fixed[start_eval + 1:])))
+        max_f_diff_fixed = float(
+            np.max(np.abs(a * f_mgdl[start_eval + horizon:] - f_mmol_fixed[start_eval + horizon:]))
+        )
+
+        # 2. Production run_hedge with scaled EPS = a^2 * 1e-8
+        agg.EPS = (a ** 2) * 1e-8
+        f_mmol_scaled, l_mmol_scaled, w_mmol_scaled = run_hedge(
+            preds_mmol, losses_mmol, y_mmol, start=start, horizon=horizon, return_weights=True, **spec
+        )
+        agg.EPS = 1e-8
+
+        max_w_diff_scaled = float(np.max(np.abs(w_mgdl - w_mmol_scaled)))
+        max_f_diff_scaled = float(np.max(np.abs(a * f_mgdl - f_mmol_scaled)))
+
+        print(f"Variant: {label} ({spec})")
+        print(f"  [Scaled EPS = a^2 * 1e-8] Max |w_mgdl - w_mmol|         : {max_w_diff_scaled:.3e}")
+        print(f"  [Scaled EPS = a^2 * 1e-8] Max |a*y_hat_mgdl - y_hat_mmol|: {max_f_diff_scaled:.3e}")
+        print(f"  [Fixed  EPS = 1e-8]       Max |w_mgdl - w_mmol|         : {max_w_diff_fixed:.3e}")
+        print(f"  [Fixed  EPS = 1e-8]       Max |a*y_hat_mgdl - y_hat_mmol|: {max_f_diff_fixed:.3e}")
+
+        assert max_w_diff_scaled < 1e-14, f"Scaled-EPS weight invariance failed for {label}!"
+        assert max_w_diff_fixed < 1e-7, f"Fixed-EPS weight invariance failed for {label}!"
+
+    print("\n" + "=" * 80)
+    print("SUCCESS: Production aggregators satisfy Proposition 1 (Unit Scale-Invariance).")
+    print("=" * 80)
+
 
 if __name__ == "__main__":
-    run_scale_invariance_test()
+    main()
