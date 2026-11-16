@@ -76,7 +76,6 @@ fs_comparison/parts/
 fs_comparison/per_participant.csv
 
 # misc
-slurm/
 slurm_logs/
 *.slurm
 HBMLAudit.html
