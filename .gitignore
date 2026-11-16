@@ -79,3 +79,4 @@ fs_comparison/per_participant.csv
 slurm/
 slurm_logs/
 *.slurm
+HBMLAudit.html
