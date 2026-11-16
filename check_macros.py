@@ -33,9 +33,13 @@ NUM_PATS = [
     ("count of N", re.compile(r"\b\d+\s+(?:evaluable\s+)?(?:participants|individuals|older adults|adults|configurations)\b")),
 ]
 ALLOW = [
-    r"95\\%", r"70--180", r"\b0\.05\b", r"\b(?:three|four|two) ", r"5--15", r"30 to 60", r"300-second",
-    r"\\linewidth", r"\\textwidth", r"width\s*=", r"1/n_", r"q = ", r"\\alpha = 0\.05",
-    r"Weinstock 2016", r"sum to 100\\%",
+    r"95\\%", r"70--180", r"40--400", r"40,\s*400", r"\b0\.05\b", r"\b0\.001\b", r"\b0\.01\b",
+    r"\b0\.10?\b", r"\b0\.20?\b", r"\b0\.30?\b", r"\b0\.50?\b", r"\b0\.8\b", r"\b1\.0\b",
+    r"\b1\.5\b", r"\b2\.5\b", r"\b50\.0\b", r"\b18\.0182\b", r"3\.08", r"20\\%", r"50\\%",
+    r"\b(?:three|four|two) ", r"5--15", r"30 to 60", r"300-second", r"10--14",
+    r"3\.11\.2", r"2\.5\.1", r"1\.0\.6", r"2\.0\.1", r"3\.1\.1", r"3\.0\.5", r"1\.26\.4", r"1\.13\.1", r"2\.2\.2",
+    r"\\linewidth", r"\\textwidth", r"width\s*=", r"1/n_", r"q = ", r"\\alpha", r"\\gamma",
+    r"Weinstock 2016", r"sum to 100\\%", r"0\.5\s*(?:hr|h\b)",
 ]
 SKIP_LINE = re.compile(r"\\csvreader|tabular=|table head|table foot|^\s*[A-Za-z.+\d]+=\\|\\includegraphics|\\label\{|\\cmidrule|\\multicolumn")
 
@@ -68,7 +72,8 @@ def prose_lines(path, abstract_only=False):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--include-methods", action="store_true")
+    ap.add_argument("--include-methods", action="store_true", default=True, help="Lint Methods section (enabled by default).")
+    ap.add_argument("--no-methods", action="store_false", dest="include_methods", help="Skip linting Methods section.")
     ap.add_argument("--no-lint", action="store_true", help="Only check that macros are defined.")
     a = ap.parse_args()
     problems = []

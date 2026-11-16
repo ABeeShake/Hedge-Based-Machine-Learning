@@ -6,6 +6,30 @@ class GlobalValues:
     # Aggregator variants that are never shown as separate rows in the main tables.
     hbml_variants = ["HBML (c)", "HBML (d)", "HBML (fd)", "HBML-SFH", "HBML-SFHDF",
                      "HBML-SFH-SD", "HBML-SFH-Meta", "HBML-FS"]
+
+    # ---- Simulation protocol (engine v2). Every script reads these; change them only here. ----
+    # All series live on a 5-minute grid (ExpMethods/timegrid.py); one step = one slot = 5 min.
+    # Experts are trained on the participant's own first `burn_in_steps` real readings (24 h of data),
+    # refitted every `retrain_interval` slots (24 h of clock time) on data observed so far, and issue
+    # forecasts from then on.
+    grid_step_min = 5.0
+    max_gap_min = 30.0              # readings <= 30 min apart: slots between them linearly filled (inputs only)
+                                    # longer gaps end a segment; they are bridged for model inputs only
+    min_segment_history = 12        # after a long gap, forecasts resume once 12 slots (1 h) are back
+    burn_in_steps = 288
+    retrain_interval = 288
+    max_horizon_steps = 60          # longest horizon (5 h); scoring starts after it so all horizons share time points
+    eval_start = burn_in_steps + max_horizon_steps
+    eval_tail = 10
+    forecast_clip = (40.0, 400.0)   # CGM sensor range; every expert forecast is clipped to it
+    # Expert pool written to <id>_forecasts.csv (column names).
+    experts = ["ARIMA", "ETS", "NHITS", "NODE", "XGBoost", "Persistence", "RunningMean"]
+
+    @staticmethod
+    def eval_slice():
+        """Window of rows scored in every RMSE / Clarke / Max-AE computation. Within it only rows with a
+        real reading and an issued forecast count (ExpMethods.evaluation.scored_mask)."""
+        return slice(GlobalValues.eval_start, -GlobalValues.eval_tail)
     torch_models = [
         "lstm".casefold(), 
         "node".casefold(),
@@ -149,6 +173,8 @@ class GlobalValues:
         Autoformer = "#9467bd",
         NHITS = "#8c564b",
         ETS = "#e377c2",
+        Persistence = "#7f7f7f",
+        RunningMean = "#bcbd22",
         )
     linestyle_params = {
         "Hedge (d)": "-.",

@@ -38,7 +38,8 @@ import numpy as np
 # Ensure project root is in path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from fast_engine import FastRollingSimulation, run_cohort
+from fast_engine import FastRollingSimulation, run_cohort, is_complete
+from ExpMethods.globals import GlobalValues
 
 
 HORIZON_MAP = {
@@ -172,30 +173,22 @@ def get_patient_id(path: str) -> str:
     return os.path.splitext(base)[0]
 
 
-# Timestamp cutoff: Only files created on or after Oct 15, 2026 20:10 UTC were generated
-# by the new high-performance engine (fast_engine). Older files are from legacy simulations
-# or legacy post-processing runs.
-FAST_ENGINE_CUTOFF = 1792095000.0
+def expected_settings(cond: Dict[str, Any], retrain_interval: Optional[int] = None) -> Dict[str, Any]:
+    """Engine settings a finished forecast file must have been produced with."""
+    return FastRollingSimulation(
+        horizon=cond["horizon_num"], context_len=cond["context_val"],
+        retrain_interval=retrain_interval,
+    ).settings()
 
 
-def is_patient_complete(cond_dir: str, p_id: str) -> bool:
-    """Check if the forecast file for a patient exists, was produced by the new fast engine,
-    and is structurally complete (not truncated or from a --debug run)."""
+def is_patient_complete(cond_dir: str, p_id: str, retrain_interval: Optional[int] = None,
+                        cond: Optional[Dict[str, Any]] = None) -> bool:
+    """A forecast file counts as complete only if its .meta.json matches the current engine and settings
+    (older forecast files, which have no metadata, are always re-run)."""
     fc_path = os.path.join(cond_dir, "forecasts", f"{p_id}_forecasts.csv")
-    if not (os.path.exists(fc_path) and os.path.getsize(fc_path) > 500):
-        return False
-    # Reject files from legacy/old simulations (prior to Oct 15 2026 20:10 UTC)
-    if os.path.getmtime(fc_path) < FAST_ENGINE_CUTOFF:
-        return False
-    try:
-        df = pd.read_csv(fc_path, usecols=["NODE"])
-        arr = df["NODE"].to_numpy()
-        # Reject debug runs or truncated files where the tail is all zeros
-        if len(arr) < 100 or arr[-1] == 0.0:
-            return False
-    except Exception:
-        return False
-    return True
+    if cond is None:
+        cond = next(c for c in build_condition_registry() if os.path.normpath(c["output_dir"]) == os.path.normpath(cond_dir))
+    return is_complete(fc_path, expected_settings(cond, retrain_interval))
 
 
 def list_conditions(registry: List[Dict[str, Any]]):
@@ -214,7 +207,7 @@ def list_conditions(registry: List[Dict[str, Any]]):
         completed_p = 0
         for f in csv_files:
             p_id = get_patient_id(f)
-            if is_patient_complete(cond["output_dir"], p_id):
+            if is_patient_complete(cond["output_dir"], p_id, cond=cond):
                 completed_p += 1
                 
         pending_p = total_p - completed_p
@@ -240,6 +233,7 @@ def run_condition(
     n_workers: int = 4,
     skip_existing: bool = True,
     debug: bool = False,
+    retrain_interval: Optional[int] = None,
 ):
     """Run simulation for a single experimental condition with optional patient chunking."""
     ds = cond["dataset"]
@@ -293,10 +287,12 @@ def run_condition(
         raw_df = pd.read_csv(csv_path)
         t_end = len(raw_df) - h_num
         if debug:
-            t_end = min(t_end, 70)
+            t_end = min(t_end, GlobalValues.burn_in_steps + 80)
             
         settings = {
-            "start": 21,
+            "start": GlobalValues.burn_in_steps,
+            "eval_start": GlobalValues.eval_start,
+            "retrain_interval": retrain_interval or GlobalValues.retrain_interval,
             "log_n_steps": 500,
             "horizon": h_num,
             "batch_size": 32,
@@ -317,7 +313,7 @@ def run_condition(
     skipped_count = 0
     for f in csv_files:
         p_id = get_patient_id(f)
-        if skip_existing and is_patient_complete(cond_dir, p_id):
+        if skip_existing and is_patient_complete(cond_dir, p_id, retrain_interval, cond):
             skipped_count += 1
         else:
             pending_files.append(f)
@@ -334,11 +330,11 @@ def run_condition(
         csv_paths=pending_files,
         horizon=h_num,
         context_len=ctx,
-        start_step=21,
-        end_step=70 if debug else None,
-        n_workers=n_workers,
         output_dir=cond_dir,
+        n_workers=n_workers,
         skip_existing=skip_existing,
+        retrain_interval=retrain_interval,
+        end_step=GlobalValues.burn_in_steps + 80 if debug else None,
     )
     dt = time.perf_counter() - t0
     print(f"✓ Finished {len(pending_files)} participants in {dt:.2f} s ({dt/max(len(pending_files),1):.2f} s/patient)")
@@ -414,7 +410,9 @@ def parse_args():
     )
     parser.add_argument("--skip_existing", action="store_true", default=True, help="Skip patients with complete forecast files.")
     parser.add_argument("--force_overwrite", action="store_false", dest="skip_existing", help="Force overwrite of existing forecast files.")
-    parser.add_argument("--debug", action="store_true", default=False, help="Quick test mode (1 patient, 70 steps).")
+    parser.add_argument("--debug", action="store_true", default=False, help="Quick test mode (1 patient, 80 steps after burn-in).")
+    parser.add_argument("--retrain_interval", type=int, default=None,
+                        help="Steps between expert refits (default GlobalValues.retrain_interval = 288, i.e. 24 h).")
     parser.add_argument("--list_conditions", action="store_true", default=False, help="Print status of all 24 conditions and exit.")
     
     return parser.parse_args()
@@ -478,6 +476,7 @@ def main():
                 n_workers=args.n_workers,
                 skip_existing=args.skip_existing,
                 debug=args.debug,
+                retrain_interval=args.retrain_interval,
             )
             return
         else:
@@ -524,6 +523,7 @@ def main():
             n_workers=args.n_workers,
             skip_existing=args.skip_existing,
             debug=args.debug,
+            retrain_interval=args.retrain_interval,
         )
 
 

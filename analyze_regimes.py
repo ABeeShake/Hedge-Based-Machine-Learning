@@ -47,6 +47,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ExpMethods.evaluation as ev  # noqa: E402
+from ExpMethods.globals import GlobalValues
+from ExpMethods.timegrid import Grid
+
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 # ---------------------------------------------------------------------------
@@ -403,6 +408,18 @@ def main():
         except Exception as e:
             print(f"ERROR ({e})")
             continue
+
+        # 5-minute grid: forecast rows are grid slots, so put glucose and regime labels on the same
+        # rows and keep only scored rows (real reading + issued forecast, inside the eval window)
+        grid = Grid.from_csv(os.path.join(args.data_dir, f"{pid}.csv"), max_gap_min=GlobalValues.max_gap_min,
+                             step_min=GlobalValues.grid_step_min)
+        n = min(len(grid), len(forecasts))
+        forecasts = forecasts.iloc[:n].reset_index(drop=True)
+        exp_cols = [c for c in GlobalValues.experts if c in forecasts.columns]
+        mask = ev.scored_mask(forecasts[exp_cols].to_numpy(float), grid.raw[:n])
+        g_arr = np.where(mask, grid.raw[:n], np.nan)
+        glucose = pd.Series(g_arr)
+        regimes = pd.DataFrame({"regime": grid.to_grid(regimes["regime"].astype(object))[:n]})
 
         result = analyze_patient(pid, glucose, regimes, forecasts)
         print(f"OK — regimes: {sorted(result['rmse']['regime'].unique()) if not result['rmse'].empty else 'none'}")

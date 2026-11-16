@@ -29,8 +29,8 @@ if [ ! -f "$PYTHON_BIN" ]; then
     PYTHON_BIN="python3"
 fi
 
-CONDITIONS="12-23"
-CHUNK_SIZE="5"
+CONDITIONS="0-23"
+CHUNK_SIZE="20"
 THROTTLE="4"
 DRY_RUN=false
 LIST_ONLY=false

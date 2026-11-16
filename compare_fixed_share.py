@@ -18,7 +18,7 @@ cum_decaymax   current update rule with the decayed-max scale (isolates the scal
 uniform        equal-weight average of the experts (reference)
 
 Evaluation mirrors process_results.py: start step 21, squared error of the
-weighted-mean forecast, RMSE over ``loss[100:-10]``.
+weighted-mean forecast, RMSE over the shared scoring window (GlobalValues.eval_slice()).
 
 Choosing a variant on the same participants that are then reported would be
 selection on the test set. The report therefore also splits participants into
@@ -43,42 +43,40 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ExpMethods import aggregators as agg  # noqa: E402
+from ExpMethods import evaluation as ev  # noqa: E402
+from ExpMethods.globals import GlobalValues  # noqa: E402
+from fast_engine.simulation import ENGINE_VERSION, meta_path  # noqa: E402
 
-START = 21
-EVAL = slice(100, -10)
-FAST_ENGINE_CUTOFF = 1792090000.0  # same cutoff as run_simulation_chunk.py
-EXPERTS = ["NODE", "ARIMA", "XGBoost", "NHITS", "ETS"]
+START = GlobalValues.burn_in_steps
+EVAL = GlobalValues.eval_slice()
+EXPERTS = list(GlobalValues.experts)
 HORIZONS = {"half": 6, "2": 24, "5": 60}
 CONTEXTS = ["6", "12", "24", "full"]
 VARIANTS = {
     "current": dict(update="cumulative", scale="ema", gamma=0.2, alpha=0.0),
-    "alg1_fs_fd": dict(update="recursive", scale="decay_max", gamma=0.2, alpha="fd"),
+    "cum_decaymax": dict(update="cumulative", scale="decay_max", gamma=0.2, alpha=0.0),
+    "sfh_sqrt": dict(update="cumulative", scale="sqrt_sum_sq", gamma=0.0, alpha=0.0),
+    "ftl": dict(update="ftl", scale="running_max", gamma=0.0, alpha=0.0),
     "alg1_noshare": dict(update="recursive", scale="decay_max", gamma=0.2, alpha=0.0),
+    "alg1_fs_fd": dict(update="recursive", scale="decay_max", gamma=0.2, alpha="fd"),
     "alg1_fs_d": dict(update="recursive", scale="decay_max", gamma=0.2, alpha="d"),
     "alg1_fs_c0.001": dict(update="recursive", scale="decay_max", gamma=0.2, alpha=0.001),
     "alg1_fs_c0.01": dict(update="recursive", scale="decay_max", gamma=0.2, alpha=0.01),
     "alg1_fs_c0.05": dict(update="recursive", scale="decay_max", gamma=0.2, alpha=0.05),
-    "cum_decaymax": dict(update="cumulative", scale="decay_max", gamma=0.2, alpha=0.0),
 }
 FS_VARIANTS = [v for v in VARIANTS if "_fs_" in v]
 
 
 def find_targets(root, dataset, pid):
-    for d in (os.path.join(root, dataset), os.path.join(root, "Outputs", dataset, "data")):
-        p = os.path.join(d, f"{pid}.csv")
-        if os.path.exists(p):
-            try:
-                df = pd.read_csv(p)
-            except OSError:
-                continue
-            col = "Libre.GL" if "Libre.GL" in df.columns else "Dexcom.GL"
-            return df[col].to_numpy(dtype=float)
-    return None
+    """Grid targets (NaN where the 5-min slot has no real reading); see ExpMethods/evaluation.py."""
+    try:
+        return ev.load_targets(dataset, pid, root=root)
+    except OSError:
+        return None
 
 
-def rmse(loss):
-    v = loss[EVAL]
-    return float(np.sqrt(np.mean(v))) if len(v) else float("nan")
+def rmse(loss, mask):
+    return ev.rmse(loss, mask)
 
 
 def _one_participant(task):
@@ -99,22 +97,31 @@ def _one_participant(task):
     n = min(len(f_mat), len(y))
     f_mat, y = f_mat[:n], y[:n]
     l_mat = agg.online_losses(f_mat, y, START, h)
-    rec = {c: rmse(l_mat[:, i]) for i, c in enumerate(cols)}
+    mask = ev.scored_mask(f_mat, y)
+    rec = {c: rmse(l_mat[:, i], mask) for i, c in enumerate(cols)}
     uni = np.nanmean(f_mat, axis=1)
-    ul = (uni - y) ** 2
-    ul[: START + h] = 0.0
-    rec["uniform"] = rmse(ul)
+    with np.errstate(invalid="ignore"):
+        ul = (uni - y) ** 2
+    rec["uniform"] = rmse(ul, mask)
     for name, spec in VARIANTS.items():
         _, loss = agg.run_hedge(f_mat, l_mat, y, start=START, horizon=h, **spec)
-        rec[name] = rmse(loss)
+        rec[name] = rmse(loss, mask)
     return [dict(dataset=dataset, horizon=hkey, context=ctx, id=pid, variant=k, rmse=v) for k, v in rec.items()]
+
+
+def _current_engine(fc_path):
+    try:
+        import json
+        return json.load(open(meta_path(fc_path)))["settings"]["engine_version"] == ENGINE_VERSION
+    except (OSError, ValueError, KeyError):
+        return False
 
 
 def run_condition(root, dataset, hkey, ctx, min_mtime, workers=1):
     fc_dir = os.path.join(root, "Outputs", dataset, f"h-{hkey}hr", f"context-{ctx}hr", "forecasts")
     files = sorted(f for f in glob.glob(os.path.join(fc_dir, "*_forecasts.csv"))
                    if os.path.basename(f)[3:] == "_forecasts.csv")
-    fresh = [f for f in files if os.path.getmtime(f) >= min_mtime]
+    fresh = [f for f in files if min_mtime == 0.0 or _current_engine(f)]
     info = dict(n_files=len(files), n_fresh=len(fresh))
     if not files or len(fresh) < 0.5 * len(files):
         return pd.DataFrame(), info
@@ -279,7 +286,7 @@ def main():
     ap.add_argument("--out", default="fs_comparison")
     ap.add_argument("--min-complete", type=float, default=0.95,
                     help="Skip a condition unless this share of its forecast files comes from the current engine.")
-    ap.add_argument("--allow-legacy", action="store_true", help="Also use forecasts older than the fast-engine cutoff.")
+    ap.add_argument("--allow-legacy", action="store_true", help="Also use forecasts without current-engine metadata.")
     ap.add_argument("--overwrite", action="store_true")
     ap.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", min(8, max(1, (os.cpu_count() or 2) - 1)))))
     ap.add_argument("--report-only", action="store_true")
@@ -289,7 +296,7 @@ def main():
     out_dir = os.path.join(a.root, a.out)
     os.makedirs(os.path.join(out_dir, "parts"), exist_ok=True)
     if not a.report_only:
-        min_mtime = 0.0 if a.allow_legacy else FAST_ENGINE_CUTOFF
+        min_mtime = 0.0 if a.allow_legacy else 1.0  # 1.0: require current-engine metadata
         for ds in (["weinstock", "cgmacros"] if a.dataset == "all" else [a.dataset]):
             for hk in (list(HORIZONS) if a.horizon == "all" else [a.horizon]):
                 for c in (CONTEXTS if a.context == "all" else [a.context]):

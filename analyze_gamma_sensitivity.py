@@ -15,6 +15,8 @@ import numpy as np
 import pandas as pd
 import ExpMethods.simulate as sim
 import ExpMethods.utils as utils
+from ExpMethods.globals import GlobalValues
+import ExpMethods.evaluation as ev
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TABLES_DIR = os.path.join(BASE_DIR, "overleaf", "tables")
@@ -67,17 +69,16 @@ def run_gamma_sensitivity():
             if not os.path.exists(t_path) or not os.path.exists(s_path):
                 continue
             settings = utils.load_sim_settings(s_path)
-            t_df = pd.read_csv(t_path)
-            col = [c for c in t_df.columns if "gl" in c.lower() or "cgm" in c.lower() or "value" in c.lower()][0]
-            y_rec = t_df[col].values.astype(float)
+            y_rec = ev.targets_from_csv(t_path)          # 5-min grid, NaN = no real reading
             n_pts = min(len(fc_df), len(y_rec))
             y_rec = y_rec[:n_pts]
             
-            models = [m for m in ["NODE", "ARIMA", "ETS", "XGBoost", "NHITS"] if m in fc_df.columns]
+            models = [m for m in GlobalValues.experts if m in fc_df.columns]
             f_dict = {m: fc_df[m].values[:n_pts] for m in models}
             l_dict = sim.get_online_losses(f_dict, y_rec, **settings)
             
-            patients.append((pid, f_dict, l_dict, y_rec, settings))
+            mask = ev.scored_mask(np.column_stack([f_dict[m] for m in models]), y_rec)
+            patients.append((pid, f_dict, l_dict, y_rec, settings, mask))
             
         if not patients:
             continue
@@ -86,17 +87,17 @@ def run_gamma_sensitivity():
         
         for gamma in GAMMA_GRID:
             patient_rmses = []
-            for pid, f_dict, l_dict, y_rec, settings in patients:
+            for pid, f_dict, l_dict, y_rec, settings, mask in patients:
                 # Run SFH-DF
                 _, exp_l = sim.scale_free_hedge_df_forecast(
                     f_dict, l_dict, gamma=gamma,
                     save_weights=False, forecast_type="mean",
                     targets=y_rec, **settings
                 )
-                valid_l = exp_l[100:-10]
+                valid_l = np.asarray(exp_l, dtype=float)[mask[: len(exp_l)]]
                 if len(valid_l) < 30:
                     continue
-                rmse = np.sqrt(np.nanmean(valid_l))
+                rmse = np.sqrt(np.mean(valid_l))
                 patient_rmses.append(rmse)
                 
             mean_rmse = np.mean(patient_rmses) if patient_rmses else np.nan

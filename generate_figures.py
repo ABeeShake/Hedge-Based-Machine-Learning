@@ -75,7 +75,14 @@ if __name__ == "__main__":
     ## find corrupted IDs for Weinstock
     print("Finding corrupted IDs for Weinstock...")
     all_files = glob(f"{OUTPUTS_ROOT}/weinstock/**/*_forecasts.csv", recursive = True)
-    corrupted_paths = [file for file in all_files if re.search(r"^[0\.,]+$", getline(file, 123))]
+    def _no_forecasts(path):
+        # On the 5-minute grid, rows without an issued forecast are legitimately 0; a file is corrupted
+        # only if it has no forecast at all after the burn-in.
+        try:
+            return not (pd.read_csv(path).iloc[GlobalValues.eval_start:] != 0).any().any()
+        except Exception:
+            return True
+    corrupted_paths = [file for file in all_files if _no_forecasts(file)]
     corrupted_files = [re.findall(r"(?:Outputs|\.\.)/(weinstock)/h-(.{1,4})hr/context-(.{1,4})hr/.*/(\d{3})", file)[0] for file in corrupted_paths if re.findall(r"(?:Outputs|\.\.)/(weinstock)/h-(.{1,4})hr/context-(.{1,4})hr/.*/(\d{3})", file)]
     comparison_cols = ["dataset","horizon","context","id"]
     corrupted_df = pd.DataFrame(corrupted_files, columns = comparison_cols)
@@ -208,7 +215,7 @@ if __name__ == "__main__":
     cleaned_rmse_stats = cleaned_rmse_stats.groupby(["dataset", "horizon", "context"], group_keys=False).apply(format_rmse)
 
     model_order = dict(
-        ARIMA=0, ETS=1, NHITS=2, NODE=3, XGBoost=4,
+        ARIMA=0, ETS=1, NHITS=2, NODE=3, XGBoost=4, Persistence=4.1, RunningMean=4.2,
         HBML=5, **{"HBML-AE (clip-loss)": 6, "HBML-AE (sqrt)": 7, "HBML-AE (ema0.2)": 8,
                    "HBML-AE (ema0.5)": 9, "HBML-AE (ema0.8)": 10, "HBML-AE (ema1)": 11,
                    "HBML-VS": 12, "HBML-AH": 13, "HBML-SFH": 14, "HBML-SFHDF": 15}
@@ -867,7 +874,9 @@ if __name__ == "__main__":
             try:
                 full_losses = pd.read_csv(f"{OUTPUTS_ROOT}/weinstock/h-5hr/context-fullhr/losses/110_fulllosses_advanced.csv")
                 rolling_window = 144 # 12 hours * 12 (5-min intervals)
-                rolling_rmse = np.sqrt(full_losses.rolling(window=rolling_window).mean())
+                # unscored rows (no real reading / no forecast) are NaN or 0 on the 5-min grid: drop them
+                full_losses = full_losses.where(full_losses > 0)
+                rolling_rmse = np.sqrt(full_losses.rolling(window=rolling_window, min_periods=rolling_window // 2).mean())
                 
                 plt.figure(figsize=(12, 6))
                 for col in ["NODE", "XGBoost", "ARIMA", "HBML-SFHDF"]:
@@ -892,7 +901,12 @@ if __name__ == "__main__":
             clarke_dir = os.path.join(IMAGES_DIR, "clarke", "weinstock")
             os.makedirs(clarke_dir, exist_ok=True)
             preds = pd.read_csv(f"{OUTPUTS_ROOT}/weinstock/h-halfhr/context-6hr/forecasts/103_fullforecasts_advanced.csv")["HBML-SFHDF"]
-            ref = pd.read_csv(f"{w_data_dir}/103.csv")["Libre.GL"]
+            import ExpMethods.evaluation as ev
+            ref = ev.targets_from_csv(f"{w_data_dir}/103.csv")          # 5-min grid rows, NaN = no reading
+            n = min(len(ref), len(preds))
+            keep = np.isfinite(ref[:n]) & (preds.to_numpy()[:n] != 0)
+            keep[: GlobalValues.eval_start] = False
+            ref, preds = ref[:n][keep], preds.to_numpy()[:n][keep]
             viz.clarke_error_grid(ref, preds, show=False,
                                   save_file=f"{clarke_dir}/h0p5_c6_sfhdf_103.pdf")
             print(f"  Saved CEG scatter → {clarke_dir}/h0p5_c6_sfhdf_103.pdf")

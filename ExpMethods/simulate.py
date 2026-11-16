@@ -142,6 +142,10 @@ def get_online_losses(forecasts, targets, **kwargs):
     l_mat = (f_mat - targets)**2
     
     l_mat[:start+horizon] = 0
+    # 5-minute grid: rows without an issued forecast (0) or without a real reading (NaN target)
+    # give no feedback (ExpMethods/aggregators.scorable)
+    from ExpMethods.aggregators import scorable
+    l_mat[~scorable(f_mat, targets)] = 0
     
     methods = forecasts.keys()
     
@@ -738,7 +742,11 @@ def get_regrets(exp_losses, losses,**kwargs):
     #print(f"h_mat shape: {h_mat.shape}")
     
     l_mat = l_mat[start:end,:]
-    h_mat = h_mat[start:end,:]
+    h_mat = h_mat[start:end,:].astype(float)
+    # rows that give no feedback (all expert losses zeroed: warm-up, no issued forecast or no real
+    # reading on the 5-minute grid) contribute nothing to the regret
+    h_mat[(l_mat == 0).all(axis=1)] = 0.0
+    h_mat = np.nan_to_num(h_mat, nan=0.0)
     
     #print(f"l_mat shape: {l_mat.shape}")
     #print(f"h_mat shape: {h_mat.shape}")
@@ -1313,13 +1321,16 @@ def scale_free_hedge_meta_forecast(forecasts, losses, **kwargs):
     # --- Layer 1: independent SFHDF runs for each gamma ------------------
     meta_forecasts: dict = {}
     meta_losses:    dict = {}
+    # rows where the base experts give no feedback (warm-up, no issued forecast, no real reading on the
+    # 5-minute grid) must give none to layer 2 either
+    no_feedback = (utils.make_matrix(losses) == 0).all(axis=1)
     for gamma in gamma_grid:
         label = f"g{gamma:.3f}"
         exp_f, exp_l = scale_free_hedge_df_forecast(
             forecasts, losses, gamma=gamma, save_weights=False, **inner_kwargs
         )
         meta_forecasts[label] = exp_f
-        meta_losses[label]    = exp_l
+        meta_losses[label]    = np.where(no_feedback, 0.0, np.nan_to_num(np.asarray(exp_l, dtype=float), nan=0.0))
 
     # --- Layer 2: SFH over the meta-experts ------------------------------
     # The meta-expert losses are already (ŷ - y)² (from the RMSE fix), so

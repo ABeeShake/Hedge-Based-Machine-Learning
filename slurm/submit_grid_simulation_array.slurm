@@ -49,8 +49,8 @@ if [ ! -f "$PYTHON_BIN" ]; then
     PYTHON_BIN="python3"
 fi
 
-CONDITIONS="${CONDITIONS:-12-23}"
-CHUNK_SIZE="${CHUNK_SIZE:-5}"
+CONDITIONS="${CONDITIONS:-0-23}"
+CHUNK_SIZE="${CHUNK_SIZE:-20}"
 
 echo "=============================================================================="
 echo "SLURM Job ID:       $SLURM_JOB_ID"

@@ -67,3 +67,15 @@ archive/
 
 # reviews
 reviews/
+
+# graphify
+graphify-out/
+
+# intermediate per-participant Fixed-Share parts (keep summary.csv and REPORT.md)
+fs_comparison/parts/
+fs_comparison/per_participant.csv
+
+# misc
+slurm/
+slurm_logs/
+*.slurm

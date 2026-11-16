@@ -31,6 +31,7 @@ import pandas as pd
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 from ExpMethods import aggregators as agg  # noqa: E402
+from ExpMethods import evaluation as ev  # noqa: E402
 from ExpMethods.globals import GlobalValues  # noqa: E402
 
 TABLES_DIR = os.path.join(BASE_DIR, "overleaf", "tables")
@@ -42,15 +43,14 @@ HORIZON_DIR = {0.5: "h-halfhr", 2.0: "h-2hr", 5.0: "h-5hr"}
 HORIZON_STEPS = {0.5: 6, 2.0: 24, 5.0: 60}
 DATASET_LABEL = {"weinstock": "Weinstock", "cgmacros": "CGMacros"}
 HORIZON_LABEL = {0.5: "0.5 hr", 2.0: "2 hr", 5.0: "5 hr"}
-EXPERTS = ["NODE", "ARIMA", "ETS", "XGBoost", "NHITS"]
-START = 21
-EVAL = slice(100, -10)
+EXPERTS = list(GlobalValues.experts)
+START = GlobalValues.burn_in_steps
+EVAL = GlobalValues.eval_slice()
 BASELINES = ["persistence", "climatology", "uniform"]
 
 
-def _rmse(sq):
-    v = sq[EVAL]
-    return float(np.sqrt(np.nanmean(v))) if len(v) else np.nan
+def _rmse(sq, mask):
+    return ev.rmse(sq, mask)
 
 
 def wilcoxon_p(d):
@@ -72,15 +72,11 @@ def wilcoxon_p(d):
 
 
 def load_targets(ds, pid):
-    for d in (os.path.join(BASE_DIR, ds), os.path.join(OUTPUTS_DIR, ds, "data")):
-        p = os.path.join(d, f"{pid}.csv")
-        if os.path.exists(p):
-            try:
-                df = pd.read_csv(p)
-            except OSError:
-                continue
-            return df["Libre.GL" if "Libre.GL" in df.columns else "Dexcom.GL"].to_numpy(dtype=float)
-    return None
+    """Grid targets (NaN where the 5-min slot has no real reading); see ExpMethods/evaluation.py."""
+    try:
+        return ev.load_targets(ds, pid, root=BASE_DIR)
+    except OSError:
+        return None
 
 
 def participant_ids(ds, h, ctx):
@@ -129,20 +125,24 @@ def _one_participant(task):
         return None
     f_mat = fdf[cols].to_numpy(dtype=float)
     n = min(len(f_mat), len(y))
-    if n < 120 + steps:
+    if n < GlobalValues.eval_start + GlobalValues.eval_tail + 20:
         return None
     f_mat, y = f_mat[:n], y[:n]
     l_mat = agg.online_losses(f_mat, y, START, steps)
     _, hb = agg.run_named(GlobalValues.primary_hbml, f_mat, l_mat, y, start=START, horizon=steps)
+    mask = ev.scored_mask(f_mat, y)          # real reading at t+h and a forecast issued at t
+    obs = np.isfinite(y)
     pers = np.full(n, np.nan)
-    pers[steps:] = y[:-steps]
+    pers[steps:] = y[:-steps]                # origins of scored rows always hold a real reading
     clim = np.full(n, np.nan)
-    clim[steps:] = (np.cumsum(y) / np.arange(1, n + 1))[:-steps]
-    rec = dict(dataset=ds, horizon=h, context=ctx, id=pid, hbml=_rmse(hb),
-               persistence=_rmse((pers - y) ** 2), climatology=_rmse((clim - y) ** 2),
-               uniform=_rmse((np.nanmean(f_mat, axis=1) - y) ** 2))
+    run_mean = np.cumsum(np.where(obs, y, 0.0)) / np.maximum(np.cumsum(obs), 1)
+    clim[steps:] = run_mean[:-steps]         # mean of the real readings up to the origin
+    with np.errstate(invalid="ignore"):
+        rec = dict(dataset=ds, horizon=h, context=ctx, id=pid, hbml=_rmse(hb, mask),
+                   persistence=_rmse((pers - y) ** 2, mask), climatology=_rmse((clim - y) ** 2, mask),
+                   uniform=_rmse((np.nanmean(f_mat, axis=1) - y) ** 2, mask), n_scored=int(mask.sum()))
     for i, c in enumerate(cols):
-        rec[c] = _rmse(l_mat[:, i])
+        rec[c] = _rmse(l_mat[:, i], mask)
     return rec
 
 

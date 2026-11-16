@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
 import ExpMethods.utils as utils
+import ExpMethods.evaluation as ev
 import ExpMethods.simulate as sim
 import ExpMethods.visualizations as viz
 
@@ -272,6 +273,7 @@ def main():
     # Global accumulators
     rmse_accum = {}
     maxae_accum = {}
+    n_scored_accum = {}
     ceg_counts = []
     ceg_actual_all = []
     ceg_pred_all = []
@@ -387,12 +389,9 @@ def main():
             # forecasts[col] = np.roll(forecasts[col], -1)
             pass
             
-        t_df = pd.read_csv(t_path)
-        
-        if target_col in t_df.columns:
-            targets = t_df[target_col].to_numpy()
-        else:
-            targets = utils.load_targets_from_csv(t_path)
+        # Targets on the 5-minute grid: one row per slot, NaN where there is no real reading
+        # (same grid the engine used, so rows line up with the forecast file).
+        targets = ev.targets_from_csv(t_path)
             
         _forecast_len = len(forecasts.get("NODE", forecasts[list(forecasts.keys())[0]]))
         if _forecast_len != len(targets):
@@ -539,11 +538,14 @@ def main():
                         if adv_fr_df is not None and c in adv_fr_df.columns:
                             full_regrets[c] = adv_fr_df[c].to_numpy()
         
-        # --- Accumulate RMSE and Max-AE ---
+        # --- Accumulate RMSE and Max-AE (scored rows only: real reading + issued forecast) ---
         rmse_accum[id_num] = {}
         maxae_accum[id_num] = {}
+        expert_cols = [c for c in forecasts if c in GlobalValues.experts] or list(forecasts)
+        score_rows = ev.scored_mask(np.column_stack([forecasts[c] for c in expert_cols]), targets)
+        n_scored_accum[id_num] = int(score_rows.sum())
         for model, loss_arr in full_losses.items():
-            valid_loss = loss_arr[100:-10]
+            valid_loss = np.asarray(loss_arr, dtype=float)[score_rows[: len(loss_arr)]]
             if len(valid_loss) > 0:
                 rmse_accum[id_num][model] = np.sqrt(np.mean(valid_loss))
                 maxae_accum[id_num][model] = np.max(np.sqrt(valid_loss))
@@ -567,9 +569,8 @@ def main():
         # --- Accumulate CEG for all models ---
         if args.plot_ceg:
             for model_name, p in full_forecasts.items():
-                start_idx, end_idx = 100, -10
-                a_sliced = targets[start_idx:end_idx]
-                p_sliced = p[start_idx:end_idx]
+                a_sliced = targets[score_rows]
+                p_sliced = np.asarray(p, dtype=float)[score_rows]
                 
                 if len(a_sliced) > 0 and len(p_sliced) > 0:
                     ceg_dict = viz.clarke_error_grid(a_sliced, p_sliced, return_dict=True, plot=False)
@@ -596,6 +597,10 @@ def main():
     rmse_long["eta"] = args.eta
     rmse_long["dataset"] = dataset_name
     
+    # Number of scored rows (real reading + issued forecast) per participant, for the coverage macros
+    pd.DataFrame({"id": list(n_scored_accum), "n_scored": list(n_scored_accum.values())}).to_csv(
+        os.path.join(args.output_dir, "n_scored.csv"), index=False)
+
     # Save per-condition rmse.csv first (race-free in parallel runs)
     cond_rmse_path = os.path.join(args.output_dir, "rmse.csv")
     utils.save_data(rmse_long, path=cond_rmse_path, mode="w", header=True)

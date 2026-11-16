@@ -29,6 +29,7 @@ import pandas as pd
 import numpy as np
 
 from fast_engine import FastRollingSimulation, run_cohort
+from ExpMethods.globals import GlobalValues
 
 
 HORIZON_MAP = {
@@ -112,7 +113,7 @@ def run_stage1_simulations(
                         t_end = min(t_end, 70)
 
                     settings = {
-                        "start": 21,
+                        "start": GlobalValues.burn_in_steps,
                         "log_n_steps": 500,
                         "horizon": h_num,
                         "batch_size": 32,
@@ -134,8 +135,7 @@ def run_stage1_simulations(
                     csv_paths=csv_files,
                     horizon=h_num,
                     context_len=ctx,
-                    start_step=21,
-                    end_step=70 if debug else None,
+                    end_step=GlobalValues.burn_in_steps + 80 if debug else None,
                     n_workers=n_workers,
                     output_dir=cond_dir,
                 )

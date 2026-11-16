@@ -52,7 +52,8 @@ STATUS_NAME = {"non-T2D": "NoDiabetes", "pre-T2D": "Prediabetes", "T2D": "TypeTw
 MACRO_PREFIXES = ("RMSE", "CEG", "Wilcoxon", "Ttest", "PctImproved", "PctWorse", "NImproved", "NWorse", "NTotal",
                   "PairedDiff", "BestExpert", "StatAll", "StatWeinstock", "StatCgmacros", "StatCGMacros",
                   "Baseline", "Vol[A-Z]", "Timing", "NWeinstock", "NCgmacros", "NCGMacros", "NConfigs", "NTotalParticipants",
-                  "Ablation", "GammaSens", "NExpertsWinning", "TopWinner", "SecondWinner")
+                  "NParticipantConfigs", "NSecondarySubset", "Ablation", "GammaSens", "NExpertsWinning", "TopWinner", "SecondWinner",
+                  "Pop[A-Z]", "Cadence", "Grid", "Weight", "PoolSeven", "Clipped", "Hypo", "Regime", "Seed")
 
 
 def clean_name(name):
@@ -336,8 +337,11 @@ def generate_macros(strict=False, quiet=False):
     except Exception as e:  # pragma: no cover
         warnings_.append(f"could not derive subgroup sizes: {e}")
     if n_by_ds:
-        M.add("NTotalParticipants", sum(max(v) for v in n_by_ds.values()))
+        tot_p = sum(max(v) for v in n_by_ds.values())
+        M.add("NTotalParticipants", tot_p)
+        M.add("NParticipantConfigs", f"{tot_p * 12:,}".replace(",", "{,}"))
     M.add("NConfigs", "24")
+    M.add("NSecondarySubset", "20")
 
     # 6. Baselines
     M.section("Naive baselines (persistence, running mean, uniform ensemble)")
@@ -391,6 +395,7 @@ def generate_macros(strict=False, quiet=False):
         model = None
         cat_name = {"Forecasting": "Forecast", "Training": "Train", "Hedge Update": "HedgeUpdate",
                     "5-Expert Forecasting": "ForecastAll", "5-Expert Training": "TrainAll",
+                    "All-Expert Forecasting": "ForecastAll", "All-Expert Training": "TrainAll",
                     "End-to-End Step (w/ Train)": "StepTotal"}
         for r in rows:
             raw = r.get("Model", "") or ""
@@ -426,7 +431,9 @@ def generate_macros(strict=False, quiet=False):
             v = to_float(r.get("rmse", ""))
             if v is not None:
                 by_cfg_p[(ds_k, hz_k, cname)][str(r["id"]).zfill(3)][clean_name(r["model"])] = v
-        exps_list = ["ARIMA", "ETS", "NHITS", "NODE", "XGBoost"]
+        from ExpMethods.globals import GlobalValues as _G
+        _present = {clean_name(r["model"]) for r in rows}
+        exps_list = [e for e in _G.experts if e in _present]   # v1 tables have 5 experts, v2 tables 7
         n_win_all = []
         rel_diff_30m = []
         for (ds_k, hz_k, cname), pmap in sorted(by_cfg_p.items()):
@@ -480,6 +487,8 @@ def generate_macros(strict=False, quiet=False):
         var_map = {
             "current": "Primary",
             "cum_decaymax": "CumDecayMax",
+            "sfh_sqrt": "SFHSqrt",
+            "ftl": "FTL",
             "alg1_noshare": "RecNoShare",
             "alg1_fs_fd": "FSFastDecay",
             "alg1_fs_d": "FSDecay",
@@ -491,6 +500,7 @@ def generate_macros(strict=False, quiet=False):
         from collections import defaultdict
         by_ds_v = defaultdict(list)
         wins_ds_v = defaultdict(int)
+        n_conds_ds_v = defaultdict(int)
         table_cells = defaultdict(dict)
         for r in fs_rows:
             vcode = var_map.get(r["variant"])
@@ -507,6 +517,7 @@ def generate_macros(strict=False, quiet=False):
             if pct_ch is not None:
                 M.add(f"AblationRelChange{key}", f"{pct_ch:+.2f}")
                 by_ds_v[(ds_k, vcode)].append(pct_ch)
+                n_conds_ds_v[(ds_k, vcode)] += 1
             if delta_c is not None and delta_c > 0:
                 wins_ds_v[(ds_k, vcode)] += 1
             if cname == "Full" and m_rmse is not None:
@@ -516,10 +527,13 @@ def generate_macros(strict=False, quiet=False):
             M.add(f"AblationMeanRelChange{vcode}{ds_k}", f"{mean_ch:+.2f}")
             M.num(f"AblationAbsMeanRelChange{vcode}{ds_k}", abs(mean_ch), 2)
             M.add(f"AblationNWins{vcode}{ds_k}", wins_ds_v[(ds_k, vcode)])
+            M.add(f"AblationNConds{vcode}{ds_k}", n_conds_ds_v[(ds_k, vcode)])
         # Write overleaf/tables/table_aggregator_ablation.tex
         ablation_order = [
-            ("Primary", "HBML-SFHDF (primary: cumulative, EMA scale, $\\alpha=0$)"),
+            ("Primary", "HBML-SFHDF (primary: cumulative, EMA scale $1/L_t$, $\\alpha=0$)"),
             ("CumDecayMax", "Cumulative Scale-Free Hedge, decayed-max scale ($\\alpha=0$)"),
+            ("SFHSqrt", "Orabona--P\\'al $\\sqrt{t}$-Scale-Free Hedge ($\\eta_t = \\sqrt{\\ln K / \\sum_s M_s^2}$)"),
+            ("FTL", "Follow-the-Leader (FTL, hard $\\arg\\min_k C_{t,k}$)"),
             ("RecNoShare", "Recursive Scale-Free Hedge, decayed-max scale ($\\alpha=0$)"),
             ("FSFastDecay", "HBML-FS (recursive Fixed-Share, $\\alpha_n = (n+1)^{-2}$)"),
             ("FSDecay", "Recursive Fixed-Share ($\\alpha_n = (n+1)^{-1}$)"),
@@ -534,7 +548,7 @@ def generate_macros(strict=False, quiet=False):
             r"\scriptsize",
             r"\begin{tabular}{llccccc}",
             r"\toprule",
-            r"Dataset & Aggregator variant & 0.5 hr (Full) & 2 hr (Full) & 5 hr (Full) & Mean $\Delta\%$ (12 configs) & Wins / 12 \\",
+            r"Dataset & Aggregator variant & 0.5 hr (Full) & 2 hr (Full) & 5 hr (Full) & Mean $\Delta\%$ & Wins / $N_{\text{cfg}}$ \\",
             r"\midrule",
         ]
         for ds_idx, (ds_k, ds_disp) in enumerate([("Weinstock", "Weinstock 2016"), ("Cgmacros", "CGMacros")]):
@@ -545,7 +559,8 @@ def generate_macros(strict=False, quiet=False):
                 c2h = table_cells[(ds_k, vcode)].get("TwoHour")
                 c5h = table_cells[(ds_k, vcode)].get("FiveHour")
                 mch = M.defs.get(f"AblationMeanRelChange{vcode}{ds_k}", "---")
-                wns = "---" if vcode == "Primary" else f"{M.defs.get(f'AblationNWins{vcode}{ds_k}', '0')}/12"
+                nc = M.defs.get(f"AblationNConds{vcode}{ds_k}", "12")
+                wns = "---" if vcode == "Primary" else f"{M.defs.get(f'AblationNWins{vcode}{ds_k}', '0')}/{nc}"
                 s30 = f"{c30:.2f}" if c30 is not None else "---"
                 s2h = f"{c2h:.2f}" if c2h is not None else "---"
                 s5h = f"{c5h:.2f}" if c5h is not None else "---"
@@ -553,11 +568,11 @@ def generate_macros(strict=False, quiet=False):
         t_lines += [
             r"\bottomrule",
             r"\end{tabular}",
-            r"\caption{\textbf{Ablation across online aggregation rules, loss-scale estimators, and Fixed-Share mixing schedules.} "
+            r"\caption{\textbf{Ablation across online aggregation rules, loss-scale estimators, Follow-the-Leader, and Fixed-Share mixing schedules.} "
             r"All variants aggregate the identical constituent expert forecasts over the identical participant cohorts and evaluation windows. "
             r"Columns 3--5 report cohort-mean participant-level RMSE (mg/dL) in the full-history configuration at the 30-minute, 2-hour, and 5-hour horizons. "
-            r"``Mean $\Delta\%$ (12 configs)'' is the mean percentage change in RMSE relative to the primary HBML-SFHDF algorithm across all 12 horizon $\times$ context configurations per dataset (negative values indicate lower error than HBML-SFHDF; positive values indicate higher error). "
-            r"``Wins / 12'' counts configurations in which the variant achieved lower cohort-mean RMSE than HBML-SFHDF.}",
+            r"``Mean $\Delta\%$'' is the mean percentage change in RMSE relative to the primary HBML-SFHDF algorithm across evaluated horizon $\times$ context configurations per dataset (negative values indicate lower error than HBML-SFHDF; positive values indicate higher error). "
+            r"``Wins / $N_{\text{cfg}}$'' counts configurations in which the variant achieved lower cohort-mean RMSE than HBML-SFHDF.}",
             r"\label{tab:aggregator_ablation}",
             r"\end{table*}",
         ]
@@ -599,6 +614,10 @@ def generate_macros(strict=False, quiet=False):
                 n_pat = int(float(r["n_patients"]))
         if n_pat is not None:
             M.add("GammaSensNPatients", n_pat)
+        M.add("GammaSensNConfigs", len(by_gcfg))
+        all_gs = [g for gmap in by_gcfg.values() for g in gmap]
+        if all_gs:
+            M.num("GammaSensMaxGamma", max(all_gs), 1)
         reds, spans = [], []
         for gmap in by_gcfg.values():
             if 0.0 in gmap and 0.2 in gmap:
@@ -611,6 +630,175 @@ def generate_macros(strict=False, quiet=False):
             M.num("GammaSensZeroVsDefaultMaxPct", max(reds), 1)
         if spans:
             M.num("GammaSensPosSpanMaxPct", max(spans), 2)
+
+    # 10b. Weight concentration, 7-expert pool, clipped forecasts, hypoglycemia events, and regimes
+    M.section("Weight concentration, 7-expert pool, and sensor-range clipping diagnostics")
+    rows = read_rows("weight_diagnostics.csv")
+    if rows:
+        sources.append("weight_diagnostics.csv")
+        maxw_all = []
+        for r in rows:
+            if r.get("matches_tables") == "no":
+                continue
+            ds_k = dataset_label(r["dataset"])
+            hz_k = horizon_label(r["horizon"])
+            cname = CTX_NAME.get(str(r["context"]).strip().lower(), "Full")
+            key = f"{ds_k}{hz_k}{cname}"
+            mw = to_float(r.get("mean_max_weight", ""))
+            if mw is not None:
+                M.num(f"WeightMaxMean{key}", mw, 2)
+                maxw_all.append(mw)
+            M.add(f"WeightDomARIMAETSCount{key}", r.get("dom_count_ARIMA_ETS", ""))
+            M.num(f"WeightDomARIMAETSPct{key}", to_float(r.get("dom_pct_ARIMA_ETS", "")), 1)
+            p7 = to_float(r.get("hbml_pool7_rmse", ""))
+            if p7 is not None:
+                M.num(f"PoolSevenRMSE{key}", p7, 2)
+                pers_v = to_float(M.defs.get(f"BaselinePersistence{key}", ""))
+                if pers_v is not None:
+                    M.num(f"PoolSevenDiffPersistence{key}", abs(p7 - pers_v), 2)
+            chb = to_float(r.get("clipped_hbml_rmse", ""))
+            if chb is not None:
+                M.num(f"ClippedRMSEHBML{key}", chb, 2)
+            for ex in ("ARIMA", "ETS", "NHITS", "NODE", "XGBoost", "Persistence", "RunningMean"):
+                M.num(f"WeightMean{ex}{key}", to_float(r.get(f"mean_w_{ex}", "")), 2)
+                M.num(f"WeightDomPct{ex}{key}", to_float(r.get(f"dom_pct_{ex}", "")), 1)
+                cex = to_float(r.get(f"clipped_{ex}_rmse", ""))
+                if cex is not None:
+                    M.num(f"ClippedRMSE{ex}{key}", cex, 2)
+        if maxw_all:
+            M.num("WeightMaxMeanMin", min(maxw_all), 2)
+            M.num("WeightMaxMeanMax", max(maxw_all), 2)
+
+    M.section("Event-level hypoglycemia detection and Parkes Error Grid")
+    rows = read_rows("hypoglycemia_events.csv")
+    if rows:
+        sources.append("hypoglycemia_events.csv")
+        for r in rows:
+            ds_k = dataset_label(r["dataset"])
+            hz_k = horizon_label(r["horizon"])
+            m_k = clean_name(r["model"])
+            key = f"{m_k}{ds_k}{hz_k}"
+            M.add(f"HypoEpisodes{ds_k}{hz_k}", r.get("n_episodes", ""))
+            M.add(f"HypoDetected{key}", r.get("n_detected", ""))
+            M.num(f"HypoEpSens{key}", to_float(r.get("episode_sensitivity_pct", "")), 1)
+            M.num(f"HypoLeadTime{key}", to_float(r.get("mean_lead_time_min", "")), 1)
+            M.num(f"HypoPointSens{key}", to_float(r.get("point_sensitivity_pct", "")), 1)
+            M.num(f"HypoPointPPV{key}", to_float(r.get("point_ppv_pct", "")), 1)
+            M.num(f"HypoPointFOne{key}", to_float(r.get("point_f1_pct", "")), 1)
+            M.num(f"HypoFalseAlertsDay{key}", to_float(r.get("false_alerts_per_day", "")), 2)
+            M.num(f"HypoParkesA{key}", to_float(r.get("parkes_a_pct", "")), 1)
+            M.num(f"HypoParkesAB{key}", to_float(r.get("parkes_ab_pct", "")), 1)
+
+    M.section("Operational glycemic regime summary (30-min, full history)")
+    rows = read_rows("regime_summary_table.csv")
+    if rows:
+        sources.append("regime_summary_table.csv")
+        reg_map = {
+            "STABLE": "Stable",
+            "RISING": "Rising",
+            "FALLING": "Falling",
+            "HIGHVAR": "HighVar",
+            "RECOVERY": "Recovery",
+            "HYPO_TRANS": "HypoTrans",
+        }
+        for r in rows:
+            ds_k = dataset_label(r["dataset"])
+            rg_k = reg_map.get(r["regime"], clean_name(r["regime"]))
+            key = f"{rg_k}{ds_k}"
+            M.num(f"RegimeShare{key}", to_float(r.get("step_share_pct", "")), 1)
+            M.num(f"RegimeHBMLRMSE{key}", to_float(r.get("hbml_rmse", "")), 2)
+            M.add(f"RegimeBestExpert{key}", r.get("best_expert", ""))
+            M.num(f"RegimeBestExpertRMSE{key}", to_float(r.get("best_expert_rmse", "")), 2)
+            M.add(f"RegimeTopFreqExpert{key}", r.get("top_freq_expert", ""))
+            M.num(f"RegimeTopFreqPct{key}", to_float(r.get("top_freq_pct", "")), 1)
+            M.num(f"RegimeHBMLFreqPct{key}", to_float(r.get("hbml_freq_pct", "")), 1)
+
+    M.section("Secondary analysis: multi-seed stochastic stability")
+    rows = read_rows("seed_stability.csv")
+    if rows:
+        sources.append("seed_stability.csv")
+        for r in rows:
+            key = f"{dataset_label(r['dataset'])}{horizon_label(r['horizon'])}"
+            M.add(f"SeedN{key}", r.get("n_participants", ""))
+            M.add(f"SeedCount{key}", r.get("n_seeds", ""))
+            for m_k in ("NHITS", "NODE", "XGBoost", "HBML"):
+                M.num(f"SeedMeanRMSE{m_k}{key}", to_float(r.get(f"{m_k}_mean_rmse", "")), 2)
+                M.num(f"SeedWithinSD{m_k}{key}", to_float(r.get(f"{m_k}_within_patient_seed_sd", "")), 3)
+                M.num(f"SeedCohortSD{m_k}{key}", to_float(r.get(f"{m_k}_cohort_mean_seed_sd", "")), 3)
+
+    # 11. Secondary analyses (optional tables; silently skipped if absent)
+    M.section("Secondary analysis: population-trained models")
+    rows = read_rows("population_comparison.csv")
+    if rows:
+        sources.append("population_comparison.csv")
+        for r in rows:
+            sch = "Within" if r["scheme"] == "within" else "Cross"
+            key = f"{dataset_label(r['dataset'])}{horizon_label(r['horizon'])}{CTX_NAME.get(str(r['context']).lower(), 'Full')}"
+            for col, nm in (("Pop-NHITS_rmse", "NHITS"), ("Pop-XGBoost_rmse", "XGBoost"), ("HBML_rmse", "HBML"),
+                            ("HBML+Pop_rmse", "HBMLPlusPop"), ("best_personal_rmse", "BestPersonal")):
+                M.num(f"Pop{sch}{nm}{key}", to_float(r.get(col, "")))
+            M.add(f"Pop{sch}BestPersonalName{key}", r.get("best_personal_expert", ""))
+            M.add(f"Pop{sch}N{key}", r.get("n", ""))
+            for pre, nm in (("hbml_vs_popnhits", "HBMLvsNHITS"), ("hbml_vs_popxgb", "HBMLvsXGBoost"),
+                            ("pop_added_vs_hbml", "Added"), ("pop_added_vs_best", "AddedvsBest")):
+                M.num(f"Pop{sch}RelPct{nm}{key}", to_float(r.get(f"{pre}_rel_pct", "")), 1)
+                M.num(f"Pop{sch}PctImproved{nm}{key}", to_float(r.get(f"{pre}_pct_improved", "")), 1)
+                M.add(f"Pop{sch}P{nm}{key}", tex_p(to_float(r.get(f"{pre}_wilcoxon_p", ""))))
+
+    M.section("Data: 5-minute grid, gaps and forecast coverage (analyze_segments.py)")
+    rows = read_rows("grid_summary.csv")
+    if rows:
+        sources.append("grid_summary.csv")
+        sys.path.insert(0, BASE_DIR)
+        from ExpMethods.globals import GlobalValues as GV
+        M.num("GridMaxGapMin", GV.max_gap_min, 0)
+        M.num("GridWarmupMin", GV.min_segment_history * GV.grid_step_min, 0)
+        M.num("GridBurnInHours", GV.burn_in_steps * GV.grid_step_min / 60, 0)
+        win = {"72": "SixHr", "120": "Full", "144": "TwelveHr", "288": "TwentyFourHr"}
+        for r in rows:
+            thr = to_float(r["max_gap_min"])
+            pre = "Grid" if abs(thr - GV.max_gap_min) < 1e-9 else f"GridSens{int(thr)}"
+            pre = pre.replace("60", "Sixty").replace("45", "FortyFive").replace("90", "Ninety")
+            if not re.fullmatch(r"[A-Za-z]+", pre):
+                continue
+            ds = dataset_label(r["dataset"])
+            M.add(f"{pre}NParticipants{ds}", r["n_participants"])
+            for col, nm, nd in (("missing_pct", "MissingPct", 1), ("filled_pct", "FilledPct", 1),
+                                ("long_gap_pct", "LongGapPct", 1), ("irregular_pct", "IrregularPct", 2),
+                                ("segments_median", "SegmentsMedian", 0), ("segments_q1", "SegmentsQOne", 0),
+                                ("segments_q3", "SegmentsQThree", 0), ("segment_hours_median", "SegmentHoursMedian", 1),
+                                ("segment_hours_q1", "SegmentHoursQOne", 1), ("segment_hours_q3", "SegmentHoursQThree", 1),
+                                ("time_in_segments_ge_10h_pct", "TimeInLongSegmentsPct", 1)):
+                M.num(f"{pre}{nm}{ds}", to_float(r.get(col, "")), nd)
+            M.add(f"{pre}DroppedReadings{ds}", r.get("n_duplicates", ""))
+            for hk in ("half", "2", "5"):
+                key = f"{ds}{horizon_label(hk)}"
+                M.num(f"{pre}KeptPct{key}", to_float(r.get(f"kept_pct_{hk}", "")), 1)
+                M.num(f"{pre}SkippedPct{key}", 100 - (to_float(r.get(f"kept_pct_{hk}", "")) or 100), 1)
+                M.add(f"{pre}NKept{key}", f"{int(float(r[f'n_kept_{hk}'])):,}".replace(",", "{,}")
+                      if r.get(f"n_kept_{hk}") else "")
+                for L, cn in win.items():
+                    M.num(f"{pre}SegLocalKeptPct{key}{cn}", to_float(r.get(f"seglocal{L}_pct_{hk}", "")), 1)
+                    M.num(f"{pre}BridgedHalfPct{key}{cn}", to_float(r.get(f"bridged50_{L}_pct_{hk}", "")), 1)
+                    M.num(f"{pre}BridgedMeanPct{key}{cn}", to_float(r.get(f"bridged_mean_{L}_pct_{hk}", "")), 1)
+
+    M.section("Secondary analysis: expert refit interval")
+    rows = read_rows("retrain_cadence.csv")
+    if rows:
+        sources.append("retrain_cadence.csv")
+        hours_word = {6: "SixHour", 12: "TwelveHour", 24: "TwentyFourHour", 48: "FortyEightHour"}
+        for r in rows:
+            hw = hours_word.get(int(round(float(r["hours"]))))
+            if not hw:
+                continue
+            key = f"{dataset_label(r['dataset'])}{horizon_label(r['horizon'])}"
+            M.add(f"CadenceN{key}", r.get("n", ""))
+            M.num(f"Cadence{hw}FitSeconds{key}", to_float(r.get("fit_s_per_participant", "")), 0)
+            for col in r:
+                if col.endswith("_rmse"):
+                    M.num(f"Cadence{hw}{clean_name(col[:-5])}{key}", to_float(r[col]))
+            M.num(f"Cadence{hw}RelPctHBML{key}", to_float(r.get("HBML_rel_pct_vs_ref", "")), 1)
+            M.add(f"Cadence{hw}PHBML{key}", tex_p(to_float(r.get("HBML_p_vs_ref", ""))))
 
     # Macros used in the manuscript
     used = set()

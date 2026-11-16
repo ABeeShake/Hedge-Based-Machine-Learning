@@ -71,7 +71,7 @@ def plot_subgroup_rmse(rmse_path, out_dir):
     agg["horizon"] = pd.Categorical(agg["horizon"], categories=["0.5", "2", "5"], ordered=True)
     
     # define model colors
-    model_order = ["ARIMA", "ETS", "NHITS", "NODE", "XGBoost", "HBML"]
+    model_order = list(GlobalValues.experts) + ["HBML"]
     model_order = [m for m in model_order if m in agg["model"].unique()]
     palette = [COLORS.get(m, "#333333") for m in model_order]
     
@@ -161,7 +161,7 @@ def plot_subgroup_ceg(out_dir):
     agg["status"] = pd.Categorical(agg["status"], categories=["non-T2D", "pre-T2D", "T2D"], ordered=True)
     agg["horizon"] = pd.Categorical(agg["horizon"], categories=["0.5", "2", "5"], ordered=True)
     
-    model_order = ["ARIMA", "ETS", "NHITS", "NODE", "XGBoost", "HBML"]
+    model_order = list(GlobalValues.experts) + ["HBML"]
     model_order = [m for m in model_order if m in agg["model"].unique()]
     palette = [COLORS.get(m, "#333333") for m in model_order]
     

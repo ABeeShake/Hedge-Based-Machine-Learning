@@ -1,302 +1,267 @@
-"""fast_engine/models.py — High-Performance Forecaster Wrappers.
+"""fast_engine/models.py -- online experts for the walk-forward simulation (engine v2).
 
-Eliminates framework overheads (Lightning, Pandas infer_objects, repeated AIC grid searches)
-while preserving exact model specifications and numerical fidelity.
+Common protocol (see ``BaseExpert``)
+-----------------------------------
+``forecast(history, valid)`` receives the grid inputs up to the origin, ``y[0..t]`` (5-min slots;
+short gaps filled, long gaps bridged; see ExpMethods/timegrid.py) and the mask of slots outside long
+gaps, and returns the forecast of ``y[t+h]``. Training targets are drawn only from valid slots. Experts with parameters are (re)fitted on ``y[0..t]`` the first time
+they are called (the end of the burn-in) and again every ``retrain_interval`` steps; between
+refits they only condition on new data. Nothing after ``t`` is ever used.
+
+``context_len`` (None = full history) is the look-back window an expert conditions on:
+ARIMA/ETS are fitted to it and N-HITS uses it as its input length. Learned experts (NODE,
+N-HITS, XGBoost) are trained on all readings observed up to the refit time.
+
+Heavy dependencies (torch, xgboost, statsforecast, neuralforecast) are imported lazily so
+the cheap experts and the tests run without them.
 """
-
 import os
+import time
+from typing import Optional
+
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from typing import Optional, Tuple, Dict, Any
 
-from statsforecast.models import (
-    AutoARIMA,
-    AutoETS,
-    forward_arima,
-    forward_ets,
-    forecast_arima,
-    forecast_ets,
-)
-import xgboost as xgb
-from xgboost import XGBRegressor
-from neuralforecast.models import NHITS
-import ExpMethods.models as m
+from . import features as ft
 
 
-def resolve_device(device: Optional[torch.device] = None) -> torch.device:
-    """Resolve compute device. Defaults to CPU to avoid multi-worker GPU lock contention
-    and CUDA kernel dispatch serialization on shared multi-core nodes, unless
-    FAST_ENGINE_DEVICE='cuda' is explicitly requested and CUDA is available."""
+def resolve_device(device=None):
+    import torch
     if device is not None:
         return device
-    env_dev = os.environ.get("FAST_ENGINE_DEVICE", "cpu").strip().lower()
-    if env_dev == "cuda" and torch.cuda.is_available():
+    if os.environ.get("FAST_ENGINE_DEVICE", "cpu").strip().lower() == "cuda" and torch.cuda.is_available():
         return torch.device("cuda")
     return torch.device("cpu")
 
 
-class FastNODE:
-    """High-performance Neural ODE expert.
-    
-    Eliminates PyTorch Lightning DataModule, Sampler, and Trainer boilerplate.
-    Directly optimizes the NeuralODE vector field with in-place Adam steps on
-    pre-allocated device tensors.
-    """
-    
-    def __init__(
-        self,
-        horizon: int = 6,
-        hidden_dim: int = 64,
-        lr: float = 1e-3,
-        weight_decay: float = 1e-1,
-        batch_size: int = 10,
-        device: Optional[torch.device] = None,
-    ):
-        self.horizon = horizon
-        self.hidden_dim = hidden_dim
-        self.lr = lr
-        self.weight_decay = weight_decay
-        self.batch_size = batch_size
-        
-        self.device = resolve_device(device)
-            
-        node_params = m.DefaultModelParams.node_params(
-            horizon=horizon,
-            hidden_dim=hidden_dim,
-        )
-        self.raw_node = m.NODE(**node_params).to(self.device)
-        self.t_span = self.raw_node.t_span.to(self.device)
-        self.optimizer = torch.optim.Adam(
-            self.raw_node.parameters(),
-            lr=self.lr,
-            weight_decay=self.weight_decay,
-        )
-        
-    def step_and_forecast(self, X_context: np.ndarray) -> float:
-        """Perform 1 online training step and return horizon-h forecast.
-        
-        Args:
-            X_context: 1D or 2D array of historical glucose readings up to time t.
-        Returns:
-            Scalar forecast for time t + horizon.
-        """
-        # Convert context to device tensor
-        if not isinstance(X_context, torch.Tensor):
-            X_t = torch.tensor(X_context, dtype=torch.float32, device=self.device)
-        else:
-            X_t = X_context.to(self.device)
-            
-        if X_t.ndim == 1:
-            X_t = X_t.unsqueeze(-1)
-            
-        N = len(X_t)
-        h = self.horizon
-        b = min(self.batch_size, max(1, N - h))
-        
-        # Online training step if sufficient history is available
-        if N > h + 1:
-            max_idx = N - h - 1
-            idx = torch.randint(0, max_idx + 1, (b,), device=self.device)
-            x_batch = torch.stack([X_t[i : i + h] for i in idx], dim=0)
-            y_batch = torch.stack([X_t[i + 1 : i + h + 1, -1] for i in idx], dim=0)
-            
-            self.raw_node.train()
-            out = self.raw_node(x_batch, self.t_span)[1]
-            y_hat = out[: y_batch.size(1), :, -1].T
-            loss = F.mse_loss(y_hat, y_batch)
-            
-            self.optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            self.optimizer.step()
-            
-        # Inference step from most recent observation
-        self.raw_node.eval()
-        with torch.no_grad():
-            x_last = X_t[-1:].reshape(1, 1)
-            pred = self.raw_node(x_last, self.t_span)[1][-1, :, -1].item()
-            
-        return float(pred)
+class BaseExpert:
+    name = "base"
+    needs_fit = True
+
+    def __init__(self, horizon, context_len=None, retrain_interval=288, seed=0):
+        self.horizon = int(horizon)
+        self.context_len = None if (context_len is None or context_len <= 0) else int(context_len)
+        self.retrain_interval = int(retrain_interval)
+        self.seed = seed
+        self.last_fit_t = None
+        self.fit_seconds = []
+        self.valid = None
+
+    def lookback(self, history):
+        return history if self.context_len is None else history[-self.context_len:]
+
+    def fit(self, history):  # pragma: no cover - overridden
+        raise NotImplementedError
+
+    def predict(self, history):  # pragma: no cover - overridden
+        raise NotImplementedError
+
+    def forecast(self, history, valid=None):
+        history = np.asarray(history, dtype=float).ravel()
+        self.valid = None if valid is None else np.asarray(valid, dtype=bool)[: len(history)]
+        t = len(history) - 1
+        if self.needs_fit and (self.last_fit_t is None or t - self.last_fit_t >= self.retrain_interval):
+            t0 = time.perf_counter()
+            self.fit(history)
+            self.fit_seconds.append(time.perf_counter() - t0)
+            self.last_fit_t = t
+        return float(self.predict(history))
 
 
-class FastNHITS:
-    """High-performance N-HITS forecaster.
-    
-    Bypasses NeuralForecast high-level DataFrame wrappers and Lightning loop.
-    Calls the underlying PyTorch neural module directly on tensor windows.
-    """
-    
-    def __init__(
-        self,
-        horizon: int = 6,
-        input_size: int = 120,
-        device: Optional[torch.device] = None,
-        retrain_interval: int = 288,
-    ):
-        self.horizon = horizon
-        # A context_len of -1 denotes full historical context.
-        # Fixed lookback architectures (such as NHITS MLPs) require a concrete, positive input window.
-        # Fall back to default input size of 120 steps (10 hr) if input_size is -1 or non-positive.
-        if input_size is None or input_size <= 0:
-            input_size = 120
-        self.input_size = input_size
-        self.device = resolve_device(device)
-        
-        # Initialize core PyTorch module
-        self.model = NHITS(h=horizon, input_size=self.input_size, max_steps=1).to(self.device)
-        self.model.eval()
-        self.step_count = 0
-        
-    def step_and_forecast(self, X_context: np.ndarray) -> float:
-        """Perform direct tensor inference and periodic fine-tuning."""
-        self.step_count += 1
-        
-        # Extract the trailing input window
-        vals = X_context[-self.input_size:].flatten()
-        if len(vals) < self.input_size:
-            # Left-pad with first observation if history is shorter than input_size
-            pad_len = self.input_size - len(vals)
-            vals = np.pad(vals, (pad_len, 0), mode="edge")
-            
-        insample_y = torch.as_tensor(vals, dtype=torch.float32, device=self.device).view(1, -1, 1)
-        insample_mask = torch.ones_like(insample_y)
-        
-        batch = {
-            "insample_y": insample_y,
-            "insample_mask": insample_mask,
-            "futr_exog": None,
-            "hist_exog": None,
-            "stat_exog": None,
-        }
-        
-        with torch.no_grad():
-            pred = self.model(batch)[0, -1, 0].item()
-            
-        return float(pred)
+class Persistence(BaseExpert):
+    """y_hat(t+h) = y(t)."""
+    name = "Persistence"
+    needs_fit = False
+
+    def predict(self, history):
+        return history[-1]
 
 
-class FastStatsForecaster:
-    """High-performance ARIMA / ETS forecaster with decoupled state updating.
-    
-    Discovers optimal model orders (p,d,q) periodically (e.g. every 24h = 288 steps),
-    and updates the Kalman state recursively at every 5-minute timestep via
-    forward_arima / forward_ets. This achieves a 500x-2000x speedup.
-    """
-    
-    def __init__(
-        self,
-        model_type: str = "arima",  # 'arima' or 'ets'
-        horizon: int = 6,
-        order_retrain_interval: int = 288,
-    ):
+class RunningMean(BaseExpert):
+    """y_hat(t+h) = mean of y(0..t) over slots outside long gaps (ignores context_len)."""
+    name = "RunningMean"
+    needs_fit = False
+
+    def predict(self, history):
+        return history.mean() if self.valid is None else history[self.valid].mean()
+
+
+class StatsForecaster(BaseExpert):
+    """AutoARIMA / AutoETS: model selection on the look-back window at each refit,
+    Kalman-filter state update on the current look-back window at every step."""
+
+    def __init__(self, model_type="arima", **kw):
+        super().__init__(**kw)
         self.model_type = model_type.lower()
-        self.horizon = horizon
-        self.order_retrain_interval = order_retrain_interval
-        
-        self.auto_model = AutoARIMA() if self.model_type == "arima" else AutoETS()
-        self.fitted_state = None
-        self.step_count = 0
-        
-    def step_and_forecast(self, X_context: np.ndarray) -> float:
-        y = np.asarray(X_context, dtype=float).flatten()
-        self.step_count += 1
-        
-        # Full AIC order identification on first step or at periodic retrain intervals
-        should_refit = (
-            self.fitted_state is None
-            or (self.step_count % self.order_retrain_interval == 0)
-        )
-        
-        if should_refit:
-            try:
-                self.auto_model.fit(y=y)
-                self.fitted_state = self.auto_model.model_
-                if self.model_type == "arima":
-                    preds = forecast_arima(self.fitted_state, h=self.horizon)
-                else:
-                    preds = forecast_ets(self.fitted_state, h=self.horizon)
-                return float(preds["mean"][-1])
-            except Exception:
-                pass
-                
-        # Recursive state update (Kalman filter projection)
+        self.name = "ARIMA" if self.model_type == "arima" else "ETS"
+        self.state = None
+
+    def _auto(self):
+        from statsforecast.models import AutoARIMA, AutoETS
+        return AutoARIMA() if self.model_type == "arima" else AutoETS()
+
+    def fit(self, history):
+        m = self._auto()
+        m.fit(y=self.lookback(history))
+        self.state = m.model_
+
+    def predict(self, history):
+        from statsforecast.models import forward_arima, forward_ets, forecast_arima, forecast_ets
+        y = self.lookback(history)
+        fwd, fc = (forward_arima, forecast_arima) if self.model_type == "arima" else (forward_ets, forecast_ets)
         try:
-            if self.model_type == "arima":
-                self.fitted_state = forward_arima(self.fitted_state, y)
-                preds = forecast_arima(self.fitted_state, h=self.horizon)
-            else:
-                self.fitted_state = forward_ets(self.fitted_state, y)
-                preds = forecast_ets(self.fitted_state, h=self.horizon)
-            return float(preds["mean"][-1])
+            state = fwd(self.state, y)
         except Exception:
-            # Fallback to refit if Kalman update encounters numerical singularity
-            self.auto_model.fit(y=y)
-            self.fitted_state = self.auto_model.model_
-            if self.model_type == "arima":
-                preds = forecast_arima(self.fitted_state, h=self.horizon)
-            else:
-                preds = forecast_ets(self.fitted_state, h=self.horizon)
-            return float(preds["mean"][-1])
+            self.fit(history)          # numerical failure: refit on the current window
+            state = self.state
+        return fc(state, h=self.horizon)["mean"][-1]
 
 
-class FastXGBoost:
-    """High-performance XGBoost forecaster with warm-starting / fast histogram trees."""
-    
-    def __init__(
-        self,
-        horizon: int = 6,
-        n_estimators: int = 100,
-        learning_rate: float = 0.1,
-        retrain_interval: int = 12,  # Retrain booster every 12 steps (1 hour)
-    ):
-        self.horizon = horizon
+class XGBoostExpert(BaseExpert):
+    """Direct h-step gradient-boosted trees on lagged levels, deltas and rolling statistics
+    (fast_engine.features.xgb_features); predicts the change y(t+h) - y(t)."""
+    name = "XGBoost"
+
+    def __init__(self, n_estimators=200, learning_rate=0.05, max_depth=4, **kw):
+        super().__init__(**kw)
         self.n_estimators = n_estimators
-        self.learning_rate = learning_rate
-        self.retrain_interval = retrain_interval
-        
-        dev_choice = (os.environ.get("FAST_ENGINE_DEVICE", "cpu").strip().lower())
-        use_cuda = (dev_choice == "cuda" and torch.cuda.is_available())
-        
-        self.params = {
-            "max_depth": 6,
-            "eta": learning_rate,
-            "objective": "reg:squarederror",
-            "tree_method": "hist",
-            "device": "cuda" if use_cuda else "cpu",
-            "verbosity": 0,
-            "n_jobs": 1,
-        }
+        self.params = {"max_depth": max_depth, "eta": learning_rate, "objective": "reg:squarederror",
+                       "tree_method": "hist", "subsample": 0.8, "colsample_bytree": 0.8,
+                       "lambda": 1.0, "alpha": 0.0, "verbosity": 0, "nthread": 1, "seed": self.seed}
         self.booster = None
-        self.step_count = 0
-        
-    def _prepare_data(self, X_context: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        h = min(self.horizon, len(X_context) - 1)
-        x = X_context[: len(X_context) - h]
-        y = X_context[h : len(X_context)]
-        return x.reshape(-1, 1), y.flatten()
-        
-    def step_and_forecast(self, X_context: np.ndarray) -> float:
-        self.step_count += 1
-        X_mat = np.asarray(X_context, dtype=np.float32)
-        
-        x_train, y_train = self._prepare_data(X_mat)
-        dtrain = xgb.DMatrix(x_train, label=y_train)
-        
+
+    def fit(self, history):
+        import xgboost as xgb
+        X, Y = ft.xgb_training_set(history, len(history) - 1, self.horizon, self.valid)
+        self.booster = None if X is None or len(X) < 20 else xgb.train(
+            self.params, xgb.DMatrix(X, label=Y), num_boost_round=self.n_estimators)
+
+    def predict(self, history):
         if self.booster is None:
-            # Initial fit
-            self.booster = xgb.train(self.params, dtrain, num_boost_round=self.n_estimators)
-        elif self.step_count % self.retrain_interval == 0:
-            # Periodic update: retrain fresh booster on updated context window.
-            # Do NOT pass xgb_model=self.booster, which would append n_estimators new trees
-            # to the ensemble on every retrain, causing unbounded tree accumulation (up to 30,000 trees).
-            self.booster = xgb.train(
-                self.params,
-                dtrain,
-                num_boost_round=self.n_estimators,
-            )
-            
-        # Predict on most recent observation
-        x_last = xgb.DMatrix(X_mat[-1:].reshape(1, 1))
-        pred = self.booster.predict(x_last)[0]
-        return float(pred)
+            return history[-1]
+        import xgboost as xgb
+        x = ft.xgb_features(history, np.array([len(history) - 1]))
+        return history[-1] + float(self.booster.predict(xgb.DMatrix(x))[0])
+
+
+class NODEExpert(BaseExpert):
+    """Neural ODE on standardised glucose: integrates h steps from the latest reading.
+    Each refit runs `fit_steps` Adam steps (first fit: `first_fit_steps`) on mini-batches of
+    h-step trajectories drawn from all readings observed so far, warm-starting from the
+    previous weights."""
+    name = "NODE"
+
+    def __init__(self, hidden_dim=64, lr=1e-3, weight_decay=1e-4, batch_size=32,
+                 first_fit_steps=300, fit_steps=100, device=None, **kw):
+        super().__init__(**kw)
+        import torch
+        import ExpMethods.models as m
+        torch.manual_seed(self.seed)
+        self.torch = torch
+        self.device = resolve_device(device)
+        params = m.DefaultModelParams.node_params(horizon=self.horizon, hidden_dim=hidden_dim)
+        params["sensitivity"] = "autograd"   # direct backprop: far faster than adjoint for this small field
+        self.net = m.NODE(**params).to(self.device)
+        self.t_span = self.net.t_span.to(self.device)
+        self.opt = torch.optim.Adam(self.net.parameters(), lr=lr, weight_decay=weight_decay)
+        self.batch_size, self.first_fit_steps, self.fit_steps = batch_size, first_fit_steps, fit_steps
+        self.rng = np.random.default_rng(self.seed)
+        self.mu, self.sd = 0.0, 1.0
+
+    def fit(self, history):
+        torch = self.torch
+        t, h = len(history) - 1, self.horizon
+        pool = ft.eligible_ends(self.valid, t, h, need_path=True)
+        if len(pool) == 0:
+            return
+        ref = history if self.valid is None else history[self.valid]
+        self.mu, self.sd = float(ref.mean()), float(max(ref.std(), 1.0))
+        z = torch.tensor((history - self.mu) / self.sd, dtype=torch.float32, device=self.device)
+        n_steps = self.first_fit_steps if not self.fit_seconds else self.fit_steps
+        offs = torch.arange(1, h + 1, device=self.device)
+        self.net.train()
+        for _ in range(n_steps):
+            s = torch.as_tensor(self.rng.choice(pool, self.batch_size), device=self.device)
+            x0 = z[s].unsqueeze(-1)                                  # (b, 1)
+            target = z[s[:, None] + offs]                            # (b, h): y[s+1 .. s+h]
+            traj = self.net(x0, self.t_span)[1]                      # (h+1, b, 1); traj[j] = time j
+            loss = torch.nn.functional.mse_loss(traj[1:, :, 0].T, target)
+            self.opt.zero_grad(set_to_none=True)
+            loss.backward()
+            self.opt.step()
+        self.net.eval()
+
+    def predict(self, history):
+        torch = self.torch
+        with torch.no_grad():
+            x = torch.tensor([[(history[-1] - self.mu) / self.sd]], dtype=torch.float32, device=self.device)
+            return float(self.net(x, self.t_span)[1][-1, 0, 0]) * self.sd + self.mu
+
+
+class NHITSExpert(BaseExpert):
+    """N-HITS (NeuralForecast module) trained with Adam on input/target windows from all readings
+    observed so far, expressed relative to the last input value (fast_engine.features.neural_windows).
+    Warm-started at each refit. Input length = context_len (120 steps for full history). Input
+    windows may reach back across a long gap (bridged values); targets never lie in one."""
+    name = "NHITS"
+
+    def __init__(self, mlp_width=128, lr=1e-3, batch_size=64, first_fit_steps=500, fit_steps=150,
+                 device=None, **kw):
+        super().__init__(**kw)
+        import torch
+        from neuralforecast.models import NHITS
+        torch.manual_seed(self.seed)
+        self.torch = torch
+        self.device = resolve_device(device)
+        self.input_size = self.context_len or 120
+        self.net = NHITS(h=self.horizon, input_size=self.input_size, max_steps=1,
+                         mlp_units=3 * [[mlp_width, mlp_width]]).to(self.device)
+        self.opt = torch.optim.Adam(self.net.parameters(), lr=lr)
+        self.batch_size, self.first_fit_steps, self.fit_steps = batch_size, first_fit_steps, fit_steps
+        self.rng = np.random.default_rng(self.seed)
+
+    def _run(self, Xn):
+        torch = self.torch
+        x = torch.as_tensor(Xn, dtype=torch.float32, device=self.device).unsqueeze(-1)   # (B, L, 1)
+        batch = {"insample_y": x, "insample_mask": torch.ones_like(x),
+                 "futr_exog": None, "hist_exog": None, "stat_exog": None}
+        out = self.net(batch)
+        return out.reshape(out.shape[0], self.horizon, -1)[:, :, 0]                     # (B, h)
+
+    def fit(self, history):
+        torch = self.torch
+        t, h = len(history) - 1, self.horizon
+        pool = ft.eligible_ends(self.valid, t, h, need_path=True)
+        if len(pool) == 0:
+            return
+        n_steps = self.first_fit_steps if not self.fit_seconds else self.fit_steps
+        self.net.train()
+        for _ in range(n_steps):
+            ends = self.rng.choice(pool, self.batch_size)
+            Xn, Yn, _ = ft.neural_windows(history, ends, self.input_size, h)
+            loss = torch.nn.functional.mse_loss(self._run(Xn), torch.as_tensor(Yn, dtype=torch.float32,
+                                                                                device=self.device))
+            self.opt.zero_grad(set_to_none=True)
+            loss.backward()
+            self.opt.step()
+        self.net.eval()
+
+    def predict(self, history):
+        Xn, base = ft.neural_windows(history, np.array([len(history) - 1]), self.input_size)
+        with self.torch.no_grad():
+            return float(self._run(Xn)[0, -1]) * ft.NEURAL_SCALE + float(base[0])
+
+
+EXPERT_CLASSES = {
+    "ARIMA": lambda **kw: StatsForecaster(model_type="arima", **kw),
+    "ETS": lambda **kw: StatsForecaster(model_type="ets", **kw),
+    "NHITS": lambda **kw: NHITSExpert(**kw),
+    "NODE": lambda **kw: NODEExpert(**kw),
+    "XGBoost": lambda **kw: XGBoostExpert(**kw),
+    "Persistence": lambda **kw: Persistence(**kw),
+    "RunningMean": lambda **kw: RunningMean(**kw),
+}
+
+
+def build_experts(names, horizon, context_len, retrain_interval, seed=0):
+    return {n: EXPERT_CLASSES[n](horizon=horizon, context_len=context_len,
+                                 retrain_interval=retrain_interval, seed=seed) for n in names}

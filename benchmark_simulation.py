@@ -8,6 +8,11 @@ fast engine on identical participant CGM sequences. Measures:
 - Downstream Hedge ensemble performance
 """
 
+import sys as _sys
+_sys.exit("benchmark_simulation.py compared the legacy Lightning loop with engine v1 and is obsolete under "
+          "engine v2 (burn-in + periodic refits). Per-expert costs are now recorded during every simulation; "
+          "run summarize_engine_timings.py instead.")
+
 import os
 import sys
 import time

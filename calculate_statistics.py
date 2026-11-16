@@ -35,7 +35,10 @@ TABLES_DIR = os.path.join(BASE_DIR, "overleaf", "tables")
 DATASETS = ["weinstock", "cgmacros"]
 HORIZONS = [0.5, 2.0, 5.0]
 CONTEXTS = ["6", "12", "24", "full"]
-EXPERTS = ["ARIMA", "ETS", "NHITS", "NODE", "XGBoost"]
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from ExpMethods.globals import GlobalValues  # noqa: E402
+EXPERTS = list(GlobalValues.experts)
 HORIZON_MAP = {0.5: "0p5", 2.0: "2", 5.0: "5"}
 HORIZON_LABEL = {0.5: "0.5 hr (30 min)", 2.0: "2 hr", 5.0: "5 hr"}
 CONTEXT_LABEL = {"6": "6 hr", "12": "12 hr", "24": "24 hr", "full": "Full history"}
