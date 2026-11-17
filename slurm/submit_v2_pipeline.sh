@@ -25,8 +25,8 @@ PY="./hedge-env/bin/python3"
 [ -x "$PY" ] || PY="python3"
 
 CONDITIONS="0-23"
-CHUNK_SIZE="20"
-THROTTLE="4"
+CHUNK_SIZE="5"
+THROTTLE="8"
 DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do
