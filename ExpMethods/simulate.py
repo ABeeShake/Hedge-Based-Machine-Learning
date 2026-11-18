@@ -1345,21 +1345,8 @@ def scale_free_hedge_meta_forecast(forecasts, losses, **kwargs):
 
 # Registry mapping method names to their forecast functions.
 # Used by get_weighted_forecasts_advanced to dispatch calls.
-def fixed_share_scale_free_forecast(forecasts, losses, **kwargs):
-    """Recursive Scale-Free Hedge with Fixed-Share mixing (Algorithm 1 of the manuscript).
-
-    v_k  = p_k * exp(-(l_k - min_j l_j) / L_t),   L_t = max((1 - gamma) L_{t-1}, max_k l_k)
-    p'_k = (1 - alpha_n) * v_k / sum(v) + alpha_n / K
-
-    Implemented in :mod:`ExpMethods.aggregators` (NumPy only) so the pipeline,
-    ``compare_fixed_share.py`` and the tests all run the same code.
-
-    Kwargs
-    ------
-    gamma : float, forgetting rate of the loss scale (default 0.2).
-    alpha : "fd" (1/(n+1)^2, default), "d" (1/(n+1)), a constant in [0, 1), or 0 for no sharing.
-    start, horizon, targets, save_weights : standard kwargs.
-    """
+def _run_named_aggregator(name, forecasts, losses, **kwargs):
+    """Thin wrapper delegating a named aggregator from :mod:`ExpMethods.aggregators`."""
     from ExpMethods import aggregators as _agg
     start = kwargs.get("start", None)
     if start is None or not kwargs.get("end", None):
@@ -1369,13 +1356,28 @@ def fixed_share_scale_free_forecast(forecasts, losses, **kwargs):
     targets_arr = kwargs.get("targets", None)
     if targets_arr is not None:
         targets_arr = utils.to_np(targets_arr).ravel()
-    return _agg.run_hedge(
-        f_mat, l_mat, targets_arr,
+    extra = {k: kwargs[k] for k in ("gamma", "alpha") if k in kwargs and kwargs[k] is not None}
+    return _agg.run_named(
+        name, f_mat, l_mat, targets_arr,
         start=start, horizon=kwargs.get("horizon", 1),
-        update="recursive", scale="decay_max",
-        gamma=float(kwargs.get("gamma", 0.2)), alpha=kwargs.get("alpha", "fd"),
         return_weights=kwargs.get("save_weights", False),
+        **extra,
     )
+
+
+def fixed_share_scale_free_forecast(forecasts, losses, **kwargs):
+    """Recursive Scale-Free Hedge with Fixed-Share mixing (Algorithm 1 of the manuscript)."""
+    return _run_named_aggregator("HBML-FS", forecasts, losses, **kwargs)
+
+
+def scale_free_hedge_sqrt_forecast(forecasts, losses, **kwargs):
+    """Orabona-Pal sqrt(t)-Scale-Free Hedge (eta_t = sqrt(ln K / sum_s M_s^2))."""
+    return _run_named_aggregator("HBML-SFH-Sqrt", forecasts, losses, **kwargs)
+
+
+def ftl_forecast(forecasts, losses, **kwargs):
+    """Follow-the-Leader (hard argmin cumulative loss under delayed feedback)."""
+    return _run_named_aggregator("FTL", forecasts, losses, **kwargs)
 
 
 _ADVANCED_FORECAST_FUNCS = {
@@ -1384,8 +1386,10 @@ _ADVANCED_FORECAST_FUNCS = {
     "adahedge":                adahedge_forecast,
     "scale_free_hedge":        scale_free_hedge_forecast,
     "scale_free_hedge_df":     scale_free_hedge_df_forecast,
+    "scale_free_hedge_sqrt":   scale_free_hedge_sqrt_forecast,
     "scale_free_hedge_sd":     scale_free_hedge_sd_forecast,
     "scale_free_hedge_meta":   scale_free_hedge_meta_forecast,
+    "ftl":                     ftl_forecast,
     # existing adaptive-eta variants are dispatched via the same interface
     "adaptive_eta":            weighted_forecast_adaptive_eta,
 }

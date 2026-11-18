@@ -32,7 +32,7 @@ except ImportError:
     }
 
 # Ensure HBML variants map to the base color
-for var in ["HBML-SFHDF", "HBML-SFH", "HBML (c)", "HBML (d)", "HBML (fd)"]:
+for var in ["HBML-SFH-Sqrt", "HBML-SFHDF", "HBML-SFH", "HBML (c)", "HBML (d)", "HBML (fd)"]:
     COLORS[var] = COLORS.get("HBML", "#d62728")
 
 REGIME_COLORS = {

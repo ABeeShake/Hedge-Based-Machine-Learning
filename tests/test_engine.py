@@ -84,6 +84,21 @@ def test_clipping():
     assert fc["Persistence"].max() <= G.forecast_clip[1]
 
 
+def test_chronological_val_split_and_protocol_constants():
+    assert G.primary_hbml == "HBML-SFH-Sqrt"
+    assert G.min_scored_points == 288
+    assert G.equiv_margin_mgdl == 1.0
+    pool = np.arange(0, 300)
+    tr, va = fm.chronological_val_split(pool, horizon=24)
+    assert len(va) >= 5 and np.all(tr + 24 < va[0]), "train targets must stay strictly before validation origins"
+    # Direct Parkes Type 1 & Type 2 sanity checks (Pfutzner et al. 2013)
+    from evaluate_clinical_and_weights import parkes_error_grid_zone
+    assert parkes_error_grid_zone(100.0, 105.0, 1) == "A"
+    assert parkes_error_grid_zone(100.0, 105.0, 2) == "A"
+    assert parkes_error_grid_zone(40.0, 350.0, 1) == "E"
+    assert parkes_error_grid_zone(40.0, 350.0, 2) == "E"
+
+
 def test_feature_causality():
     y = series(600)
     e = np.array([10, 300, 500])

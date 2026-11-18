@@ -112,7 +112,8 @@ def _load_forecasts(forecast_root: str, patient_id: str,
     Load full-forecasts CSV.  Tries several naming conventions used
     by process_results.py in order of preference.
     """
-    horizon_str  = str(horizon).replace(".", "p")
+    h_raw = str(horizon).strip()
+    horizon_str = "half" if h_raw in ("0.5", "0p5", "half") else h_raw.replace(".", "p")
     horizon_full = f"h-{horizon_str}hr"
     context_full = f"context-{context}hr"
 
@@ -137,21 +138,24 @@ def _load_forecasts(forecast_root: str, patient_id: str,
 
 
 def _hbml_col(df: pd.DataFrame) -> str:
-    """Return the name of the HBML column. Enforces HBML-SFHDF and renames it to HBML."""
-    if "HBML-SFHDF" in df.columns:
-        df.rename(columns={"HBML-SFHDF": "HBML"}, inplace=True)
+    """Return the name of the primary HBML column (GlobalValues.primary_hbml) and rename it to HBML."""
+    primary = GlobalValues.primary_hbml
+    if primary in df.columns:
+        df.rename(columns={primary: "HBML"}, inplace=True)
         return "HBML"
     elif "HBML" in df.columns:
         return "HBML"
-    raise ValueError(f"No HBML-SFHDF column found. Columns: {list(df.columns)}")
+    elif "HBML-SFHDF" in df.columns:
+        df.rename(columns={"HBML-SFHDF": "HBML"}, inplace=True)
+        return "HBML"
+    raise ValueError(f"No primary HBML column ({primary}) found. Columns: {list(df.columns)}")
 
 
 def _expert_cols(df: pd.DataFrame, hbml_col: str) -> list:
     """Return the list of non-HBML model columns."""
-    skip = {"HBML", "HBML (c)", "HBML (d)", "HBML (fd)", "HBML-SFH",
-            "HBML-SFHDF", "HBML-SFH-SD", "HBML-SFH-Meta",
-            "FS (Start)", "FS (Uniform)", "FS (Decay)",
-            "LSTM", "Autoformer"}
+    skip = set(GlobalValues.hbml_variants) | {
+        "HBML", "FTL", "FS (Start)", "FS (Uniform)", "FS (Decay)", "LSTM", "Autoformer"
+    }
     return [c for c in df.columns if c not in skip and not c.startswith("HBML")]
 
 
@@ -380,9 +384,16 @@ def main():
 
     tag = f"{args.dataset}_h{args.horizon}_c{args.context}"
 
-    # Discover patients from regime files
+    # Discover patients from regime files, intersected with retained RMSE participants when available
     regime_files = sorted(glob(os.path.join(args.regimes_dir, "*_regimes.csv")))
     patient_ids  = [Path(f).stem.replace("_regimes", "") for f in regime_files]
+    ret_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "overleaf", "tables", "rmse_participant.csv")
+    if os.path.exists(ret_path):
+        _rdf = pd.read_csv(ret_path, dtype={"id": str, "context": str, "horizon": str})
+        _hz = "0.5" if str(args.horizon).strip() in ("half", "0.5", "0p5") else str(args.horizon).strip().replace(".0", "")
+        _keep = set(_rdf[(_rdf["dataset"] == args.dataset) & (_rdf["horizon"] == _hz) & (_rdf["context"] == str(args.context))]["id"].str.zfill(3))
+        if _keep:
+            patient_ids = [p for p in patient_ids if str(p).zfill(3) in _keep]
     if args.patient_ids:
         patient_ids = [p for p in patient_ids if p in args.patient_ids]
 

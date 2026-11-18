@@ -26,7 +26,7 @@ import pandas as pd
 
 from .models import build_experts
 
-ENGINE_VERSION = "2.1"
+ENGINE_VERSION = "2.2"
 
 
 def _defaults():

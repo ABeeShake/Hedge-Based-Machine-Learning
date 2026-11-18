@@ -50,6 +50,10 @@ if __name__ == "__main__":
         help="Use median and IQR instead of mean and SD for the RMSE table."
     )
     _parser.add_argument(
+        "--min_scored_points", type=int, default=GlobalValues.min_scored_points,
+        help="Minimum number of scored 5-min targets required per participant per configuration (default: GlobalValues.min_scored_points = 288 = 1 day)."
+    )
+    _parser.add_argument(
         "--exclude_hbml_rmse_above", type=float, default=None,
         help="Sensitivity analysis only: drop participants whose HBML RMSE exceeds this value. "
              "Off by default, because excluding on the outcome of the proposed method biases the comparison."
@@ -132,7 +136,7 @@ if __name__ == "__main__":
     min_rmse_all = min_rmse_all.loc[np.logical_not(min_rmse_all.id.isin(na_idx))]
     min_rmse_all.loc[min_rmse_all.horizon == "half","horizon"] = "0.5"
 
-    # Keep only the 5 base experts + primary HBML (HBML-SFHDF) for main paper tables
+    # Keep only the constituent experts + primary HBML for main paper tables
     if PRIMARY_HBML not in set(min_rmse_all.model):
         raise SystemExit(f"Primary HBML model '{PRIMARY_HBML}' (ExpMethods/globals.py) is not in the RMSE files. "
                          f"Re-run process_results.py --advanced_methods, or fix GlobalValues.primary_hbml.")
@@ -141,13 +145,69 @@ if __name__ == "__main__":
     min_rmse.loc[min_rmse.model == PRIMARY_HBML, "model"] = "HBML"
     min_rmse = min_rmse.drop_duplicates(subset=["dataset","horizon","context","model","id"], keep="last")
 
-    cleaned_rmse = min_rmse
+    # Attach n_scored per (dataset, horizon, context, id) from n_scored column or n_scored.csv files
+    _nscored_map = {}
+    if "n_scored" in min_rmse.columns:
+        for _, _r in min_rmse.dropna(subset=["n_scored"]).drop_duplicates(["dataset","horizon","context","id"]).iterrows():
+            _nscored_map[(str(_r["dataset"]), str(_r["horizon"]), str(_r["context"]), str(_r["id"]).zfill(3))] = int(_r["n_scored"])
+    for _ns_path in glob(f"{OUTPUTS_ROOT}/*/h-*hr/context-*hr/n_scored.csv"):
+        _m = re.search(r"([^/]+)/h-([^/]+)hr/context-([^/]+)hr/n_scored\.csv$", _ns_path)
+        if not _m:
+            continue
+        _ds, _h, _ctx = _m.group(1), ("0.5" if _m.group(2) == "half" else _m.group(2)), _m.group(3)
+        try:
+            for _, _r in pd.read_csv(_ns_path, dtype={"id": str}).iterrows():
+                _nscored_map[(_ds, _h, _ctx, str(_r["id"]).zfill(3))] = int(_r["n_scored"])
+        except Exception:
+            pass
+    min_rmse["n_scored"] = [
+        _nscored_map.get((str(ds), str(hz), str(cx), str(pid).zfill(3)), np.nan)
+        for ds, hz, cx, pid in zip(min_rmse["dataset"], min_rmse["horizon"], min_rmse["context"], min_rmse["id"])
+    ]
 
-    # Optional sensitivity analysis: exclude individuals with very high HBML RMSE.
-    # OFF by default. All models are dropped for flagged IDs so groups stay balanced,
-    # and every exclusion is written to tables/rmse_exclusions.csv.
+    cleaned_rmse = min_rmse
     _excl_path = os.path.join(TABLES_DIR, "rmse_exclusions.csv")
-    _excl_cols = ["dataset", "horizon", "context", "id", "rmse", "threshold"]
+    _excl_sum_path = os.path.join(TABLES_DIR, "rmse_exclusions_summary.csv")
+    _excl_cols = ["dataset", "horizon", "context", "id", "n_scored", "rmse", "threshold", "reason"]
+    _excl_records = []
+
+    # Enforce minimum scored points per participant per configuration (balanced across all models)
+    _min_pts = int(args.min_scored_points or 0)
+    if _min_pts > 0 and cleaned_rmse["n_scored"].notna().any():
+        _tot_before = (
+            cleaned_rmse.drop_duplicates(["dataset", "horizon", "context", "id"])
+            .groupby(["dataset", "horizon", "context"])["id"].nunique()
+            .to_dict()
+        )
+        _low_df = cleaned_rmse[cleaned_rmse["n_scored"].notna() & (cleaned_rmse["n_scored"] < _min_pts)]
+        _low_keys = set(zip(_low_df["dataset"], _low_df["horizon"], _low_df["context"], _low_df["id"]))
+        if _low_keys:
+            _hb_low = _low_df[_low_df["model"] == "HBML"].drop_duplicates(["dataset", "horizon", "context", "id"])
+            for _, _r in _hb_low.iterrows():
+                _excl_records.append(dict(
+                    dataset=_r["dataset"], horizon=_r["horizon"], context=_r["context"], id=_r["id"],
+                    n_scored=int(_r["n_scored"]), rmse=float(_r["rmse"]), threshold=_min_pts,
+                    reason=f"n_scored < {_min_pts}"
+                ))
+            _keep_mask = [
+                (ds, hz, cx, pid) not in _low_keys
+                for ds, hz, cx, pid in zip(cleaned_rmse["dataset"], cleaned_rmse["horizon"],
+                                           cleaned_rmse["context"], cleaned_rmse["id"])
+            ]
+            cleaned_rmse = cleaned_rmse[np.array(_keep_mask)].copy()
+            print(f"  Excluded {len(_low_keys)} participant-configurations with < {_min_pts} scored points.")
+        _sum_rows = []
+        for (_ds, _hz, _cx), _n0 in sorted(_tot_before.items()):
+            _ret = cleaned_rmse[(cleaned_rmse["dataset"] == _ds) & (cleaned_rmse["horizon"] == _hz) & (cleaned_rmse["context"] == _cx)]["id"].nunique()
+            _ex_ids = sorted({r["id"] for r in _excl_records if (r["dataset"], r["horizon"], r["context"]) == (_ds, _hz, _cx)})
+            _sum_rows.append(dict(dataset=_ds, horizon=_hz, context=_cx, min_scored_points=_min_pts,
+                                  n_total=_n0, n_retained=int(_ret), n_excluded=int(_n0 - _ret),
+                                  excluded_ids=";".join(_ex_ids)))
+        pd.DataFrame(_sum_rows).to_csv(_excl_sum_path, index=False)
+    else:
+        pd.DataFrame(columns=["dataset","horizon","context","min_scored_points","n_total","n_retained","n_excluded","excluded_ids"]).to_csv(_excl_sum_path, index=False)
+
+    # Optional sensitivity analysis: exclude individuals with very high HBML RMSE. OFF by default.
     if args.exclude_hbml_rmse_above is not None:
         _thr = float(args.exclude_hbml_rmse_above)
         _flagged = cleaned_rmse[(cleaned_rmse["model"] == "HBML") & (cleaned_rmse["rmse"] > _thr)]
@@ -156,15 +216,40 @@ if __name__ == "__main__":
             _is_bad = [k in _bad for k in zip(cleaned_rmse["dataset"], cleaned_rmse["horizon"],
                                               cleaned_rmse["context"], cleaned_rmse["id"])]
             cleaned_rmse = cleaned_rmse[~np.array(_is_bad)].copy()
-        _flagged.assign(threshold=_thr)[_excl_cols].to_csv(_excl_path, index=False)
+        for _, _r in _flagged.iterrows():
+            _excl_records.append(dict(
+                dataset=_r["dataset"], horizon=_r["horizon"], context=_r["context"], id=_r["id"],
+                n_scored=_r.get("n_scored", np.nan), rmse=float(_r["rmse"]), threshold=_thr,
+                reason=f"hbml_rmse > {_thr}"
+            ))
         print(f"  SENSITIVITY MODE: excluded {len(_bad)} participant-condition(s) with HBML RMSE > {_thr}.")
-    else:
-        pd.DataFrame(columns=_excl_cols).to_csv(_excl_path, index=False)
-    print(f"  {cleaned_rmse['id'].nunique()} individuals retained.")
+
+    pd.DataFrame(_excl_records, columns=_excl_cols).to_csv(_excl_path, index=False)
+    print(f"  {cleaned_rmse['id'].nunique()} unique individuals retained across retained participant-configurations.")
+
+    # Scored-point-weighted sensitivity analysis (weights participant MSE by scored count)
+    if cleaned_rmse["n_scored"].notna().any():
+        _w_rows = []
+        for (_ds, _hz, _cx, _mod), _g in cleaned_rmse.dropna(subset=["n_scored"]).groupby(["dataset", "horizon", "context", "model"], sort=False):
+            _w = _g["n_scored"].to_numpy(float)
+            _r = _g["rmse"].to_numpy(float)
+            _sw = _w.sum()
+            if _sw > 0:
+                _w_rows.append(dict(
+                    dataset=_ds, horizon=_hz, context=_cx, model=_mod, n_participants=len(_g),
+                    total_scored_points=int(_sw),
+                    unweighted_mean_rmse=float(_r.mean()),
+                    weighted_mean_rmse=float(np.sum(_w * _r) / _sw),
+                    pooled_point_rmse=float(np.sqrt(np.sum(_w * (_r ** 2)) / _sw)),
+                ))
+        if _w_rows:
+            pd.DataFrame(_w_rows).to_csv(os.path.join(TABLES_DIR, "rmse_weighted_sensitivity.csv"), index=False)
 
     # Raw participant-level RMSE: the single input of calculate_statistics.py and
     # calculate_baselines.py (unrounded, exactly the rows summarised in the tables).
-    cleaned_rmse[["dataset", "horizon", "context", "id", "model", "rmse"]].to_csv(
+    _retained_keys = set(zip(cleaned_rmse["dataset"], cleaned_rmse["horizon"].astype(str),
+                             cleaned_rmse["context"].astype(str), cleaned_rmse["id"].astype(str)))
+    cleaned_rmse[["dataset", "horizon", "context", "id", "model", "rmse", "n_scored"]].to_csv(
         os.path.join(TABLES_DIR, "rmse_participant.csv"), index=False)
     print(f"Saved participant-level RMSE → {os.path.join(TABLES_DIR, 'rmse_participant.csv')}")
 
@@ -218,7 +303,8 @@ if __name__ == "__main__":
         ARIMA=0, ETS=1, NHITS=2, NODE=3, XGBoost=4, Persistence=4.1, RunningMean=4.2,
         HBML=5, **{"HBML-AE (clip-loss)": 6, "HBML-AE (sqrt)": 7, "HBML-AE (ema0.2)": 8,
                    "HBML-AE (ema0.5)": 9, "HBML-AE (ema0.8)": 10, "HBML-AE (ema1)": 11,
-                   "HBML-VS": 12, "HBML-AH": 13, "HBML-SFH": 14, "HBML-SFHDF": 15}
+                   "HBML-VS": 12, "HBML-AH": 13, "HBML-SFH": 14, "HBML-SFHDF": 15,
+                   "HBML-SFH-Sqrt": 16, "FTL": 17}
     )
     horizon_order = {"0.5":0,"2":1,"5":2}
     dataset_order = {"weinstock": 0, "cgmacros": 1}
@@ -366,7 +452,7 @@ if __name__ == "__main__":
     _EXPERT_MODELS  = [m for m in _all_models if not m.startswith("HBML")]
     _HBML_MODELS    = [m for m in _all_models if m.startswith("HBML")]
     # Preferred HBML representative shown alongside experts
-    _HBML_REPR      = "HBML-SFHDF" if "HBML-SFHDF" in _all_models else (
+    _HBML_REPR      = PRIMARY_HBML if PRIMARY_HBML in _all_models else (
                        "HBML" if "HBML" in _all_models else (_HBML_MODELS[0] if _HBML_MODELS else None)
                       )
     _EXPERT_PLUS    = _EXPERT_MODELS + ([_HBML_REPR] if _HBML_REPR else [])
@@ -426,12 +512,12 @@ if __name__ == "__main__":
             strip_dir = os.path.join(IMAGES_DIR, "rmse_contrib")
             os.makedirs(strip_dir, exist_ok=True)
 
-            # --- Figure A: Expert models + HBML-SFHDF representative ---
+            # --- Figure A: Expert models + primary HBML representative ---
             fig_a, axes_a = plt.subplots(
                 1, n_ctx, figsize=(4.5 * n_ctx, 5), sharey=True, squeeze=False
             )
             fig_a.suptitle(
-                f"{fmt_dataset(ds)} — {fmt_horizon(h)} hr Horizon: Expert Models + HBML-SFHDF",
+                f"{fmt_dataset(ds)} — {fmt_horizon(h)} hr Horizon: Expert Models + {PRIMARY_HBML}",
                 fontsize=13,
             )
             for col_idx, ctx in enumerate(contexts):
@@ -550,7 +636,7 @@ if __name__ == "__main__":
     def get_diabetic_status(patient_id):
         return diabetic_map.get(str(patient_id).zfill(3), "Unknown")
 
-    cgmacros_rmse = min_rmse[min_rmse.dataset == "cgmacros"].copy()
+    cgmacros_rmse = cleaned_rmse[cleaned_rmse.dataset == "cgmacros"].copy()
     cgmacros_rmse.loc[:, "status"] = cgmacros_rmse["id"].apply(get_diabetic_status)
 
     diab_rmse = cgmacros_rmse.groupby(["status", "horizon", "context", "model"]).rmse.apply(
@@ -628,11 +714,16 @@ if __name__ == "__main__":
         else:
             print(f"  Warning: no ceg.csv files found; {full_ceg_path} not updated.")
 
-        # Clarke Error Grid Analysis
-        print("Running Clarke Error Grid Analysis...")
+        # Filter CEG rows to the exact retained participant-configurations from RMSE evaluation
         ceg_raw = pd.read_csv(full_ceg_path)
         ceg_raw.id = ceg_raw.id.astype(str).str.pad(width=3,side="left",fillchar="0")
         ceg_raw.loc[ceg_raw.horizon == "half","horizon"] = "0.5"
+        if _retained_keys:
+            _ceg_keep = [
+                (ds, str(hz), str(cx), str(pid).zfill(3)) in _retained_keys
+                for ds, hz, cx, pid in zip(ceg_raw["dataset"], ceg_raw["horizon"], ceg_raw["context"], ceg_raw["id"])
+            ]
+            ceg_raw = ceg_raw[np.array(_ceg_keep)].copy()
         ceg_raw["A+B"] = ceg_raw.A + ceg_raw.B
         ceg_raw["total"] = ceg_raw.A + ceg_raw.B + ceg_raw.C + ceg_raw.D1 + ceg_raw.D2 + ceg_raw.E1 + ceg_raw.E2
         div_cols = ["A","B","C","D1","D2","E1","E2","A+B"]
@@ -691,6 +782,7 @@ if __name__ == "__main__":
             "HBML-AH":           "HBML-AH",   # AdaHedge
             "HBML-SFH":          "HBML-SFH",  # Scale-Free Hedge
             "HBML-SFHDF":        "HBML-SFHDF", # Scale-Free Hedge with Decay Forgetting
+            "HBML-SFH-Sqrt":     "HBML-SFH-Sqrt",
             "HBML-SFH-SD":       "HBML-SFH-SD",
             "HBML-SFH-Meta":     "HBML-SFH-Meta",
         }
@@ -814,8 +906,8 @@ if __name__ == "__main__":
             extent = (100, max_len - 100, 0, np.max(avg_regrets.to_numpy()))
             xmin, xmax, ymin, ymax = extent
             xmin_z, xmax_z = 0.8 * xmax, xmax
-            if "HBML-SFHDF" in avg_regrets.columns:
-                ymin_z, ymax_z = .8 * avg_regrets.loc[xmin_z:xmax_z, "HBML-SFHDF"].min(), 1.2 * avg_regrets.loc[xmin_z:xmax_z, "HBML-SFHDF"].max()
+            if PRIMARY_HBML in avg_regrets.columns:
+                ymin_z, ymax_z = .8 * avg_regrets.loc[xmin_z:xmax_z, PRIMARY_HBML].min(), 1.2 * avg_regrets.loc[xmin_z:xmax_z, PRIMARY_HBML].max()
             else:
                 ymin_z, ymax_z = ymin, ymax
             plt.close("all")
@@ -856,20 +948,22 @@ if __name__ == "__main__":
         print("Running Extra Visualizations...")
         try:
             w_data_dir = "./weinstock" if os.path.exists("./weinstock/110.csv") else "../weinstock/data"
-            targets = utils.load_results_from_csv(f"{w_data_dir}/110.csv")
-            forecasts = utils.load_results_from_csv(f"{OUTPUTS_ROOT}/weinstock/h-5hr/context-fullhr/forecasts/110_forecasts.csv")
-            losses = utils.load_results_from_csv(f"{OUTPUTS_ROOT}/weinstock/h-5hr/context-fullhr/losses/110_losses.csv")
-            settings = utils.load_sim_settings(f"{OUTPUTS_ROOT}/weinstock/h-5hr/context-fullhr/settings/110.json")
-            # Weight plot using Scale-Free Hedge with Decay Forgetting (HBML-SFHDF)
-            from ExpMethods.simulate import scale_free_hedge_df_forecast
-            _,_, W = scale_free_hedge_df_forecast(
-                forecasts, losses,
-                save_weights=True, forecast_type="mean", **settings
-            )
+            # Weight plot using primary HBML aggregator (ExpMethods.aggregators)
+            from ExpMethods import aggregators as _agg
+            from ExpMethods import evaluation as _ev
+            _y_110 = _ev.load_targets("weinstock", "110")
+            _fc_df_110 = pd.read_csv(f"{OUTPUTS_ROOT}/weinstock/h-5hr/context-fullhr/forecasts/110_forecasts.csv")
+            _exp_cols_110 = [c for c in GlobalValues.experts if c in _fc_df_110.columns]
+            _F_110 = _fc_df_110[_exp_cols_110].to_numpy(float)
+            _n_110 = min(len(_F_110), len(_y_110))
+            _F_110, _y_110 = _F_110[:_n_110], _y_110[:_n_110]
+            _L_110 = _agg.online_losses(_F_110, _y_110, GlobalValues.burn_in_steps, 60)
+            _, _, W = _agg.run_named(PRIMARY_HBML, _F_110, _L_110, _y_110,
+                                     start=GlobalValues.burn_in_steps, horizon=60, return_weights=True)
             methods_dir = os.path.join(IMAGES_DIR, "methods")
             os.makedirs(methods_dir, exist_ok=True)
-            viz.plot_weights(W, names=forecasts.keys(), show=False, save=True, path=f"{methods_dir}/expert_weights_plot.pdf")
-            
+            viz.plot_weights(W, names=_exp_cols_110, show=False, save=True, path=f"{methods_dir}/expert_weights_plot.pdf")
+
             # --- Rolling RMSE Plot ---
             try:
                 full_losses = pd.read_csv(f"{OUTPUTS_ROOT}/weinstock/h-5hr/context-fullhr/losses/110_fulllosses_advanced.csv")
@@ -877,15 +971,15 @@ if __name__ == "__main__":
                 # unscored rows (no real reading / no forecast) are NaN or 0 on the 5-min grid: drop them
                 full_losses = full_losses.where(full_losses > 0)
                 rolling_rmse = np.sqrt(full_losses.rolling(window=rolling_window, min_periods=rolling_window // 2).mean())
-                
+
                 plt.figure(figsize=(12, 6))
-                for col in ["NODE", "XGBoost", "ARIMA", "HBML-SFHDF"]:
+                for col in ["NODE", "XGBoost", "ARIMA", "RunningMean", PRIMARY_HBML]:
                     if col in rolling_rmse.columns:
                         c = GlobalValues.color_params.get(col, None)
                         if "HBML" in col: c = GlobalValues.color_params.get("HBML", "red")
                         ls = GlobalValues.linestyle_params.get(col, "-")
                         plt.plot(rolling_rmse[col], label=col, color=c, linestyle=ls, linewidth=2)
-                
+
                 plt.title("Rolling 12-Hour RMSE (Patient 110)")
                 plt.xlabel("Time Step (5-min intervals)")
                 plt.ylabel("Rolling RMSE (mg/dL)")
@@ -897,19 +991,20 @@ if __name__ == "__main__":
                 print(f"  Saved Rolling RMSE plot → {methods_dir}/rolling_rmse_110.pdf")
             except Exception as e:
                 print(f"  Skipping Rolling RMSE plot due to: {e}")
-                
+
             clarke_dir = os.path.join(IMAGES_DIR, "clarke", "weinstock")
             os.makedirs(clarke_dir, exist_ok=True)
-            preds = pd.read_csv(f"{OUTPUTS_ROOT}/weinstock/h-halfhr/context-6hr/forecasts/103_fullforecasts_advanced.csv")["HBML-SFHDF"]
+            preds = pd.read_csv(f"{OUTPUTS_ROOT}/weinstock/h-halfhr/context-6hr/forecasts/103_fullforecasts_advanced.csv")[PRIMARY_HBML]
             import ExpMethods.evaluation as ev
             ref = ev.targets_from_csv(f"{w_data_dir}/103.csv")          # 5-min grid rows, NaN = no reading
             n = min(len(ref), len(preds))
             keep = np.isfinite(ref[:n]) & (preds.to_numpy()[:n] != 0)
             keep[: GlobalValues.eval_start] = False
             ref, preds = ref[:n][keep], preds.to_numpy()[:n][keep]
+            _agg_tag = "sfhsqrt" if PRIMARY_HBML == "HBML-SFH-Sqrt" else "sfhdf"
             viz.clarke_error_grid(ref, preds, show=False,
-                                  save_file=f"{clarke_dir}/h0p5_c6_sfhdf_103.pdf")
-            print(f"  Saved CEG scatter → {clarke_dir}/h0p5_c6_sfhdf_103.pdf")
+                                  save_file=f"{clarke_dir}/h0p5_c6_{_agg_tag}_103.pdf")
+            print(f"  Saved CEG scatter → {clarke_dir}/h0p5_c6_{_agg_tag}_103.pdf")
             print("Visualizations created.")
         except Exception as e:
             print(f"Skipping extra visualizations due to: {e}")

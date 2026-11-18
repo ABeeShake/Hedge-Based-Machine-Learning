@@ -1,13 +1,14 @@
 
 class GlobalValues:
     # Name (as written by process_results.py) of the aggregator reported as "HBML"
-    # in every table, figure and macro. Change it here only, e.g. to "HBML-FS".
-    primary_hbml = "HBML-SFHDF"
+    # in every table, figure and macro. Adopted as HBML-SFH-Sqrt (Orabona-Pal sqrt(t)
+    # scale-free rate) after the aggregator ablation.
+    primary_hbml = "HBML-SFH-Sqrt"
     # Aggregator variants that are never shown as separate rows in the main tables.
     hbml_variants = ["HBML (c)", "HBML (d)", "HBML (fd)", "HBML-SFH", "HBML-SFHDF",
-                     "HBML-SFH-SD", "HBML-SFH-Meta", "HBML-FS"]
+                     "HBML-SFH-Sqrt", "HBML-SFH-SD", "HBML-SFH-Meta", "HBML-FS", "FTL"]
 
-    # ---- Simulation protocol (engine v2). Every script reads these; change them only here. ----
+    # ---- Simulation protocol (engine v2.2). Every script reads these; change them only here. ----
     # All series live on a 5-minute grid (ExpMethods/timegrid.py); one step = one slot = 5 min.
     # Experts are trained on the participant's own first `burn_in_steps` real readings (24 h of data),
     # refitted every `retrain_interval` slots (24 h of clock time) on data observed so far, and issue
@@ -21,6 +22,8 @@ class GlobalValues:
     max_horizon_steps = 60          # longest horizon (5 h); scoring starts after it so all horizons share time points
     eval_start = burn_in_steps + max_horizon_steps
     eval_tail = 10
+    min_scored_points = 288         # minimum 1 day (288 scored 5-min targets) per participant per configuration
+    equiv_margin_mgdl = 1.0         # pre-specified TOST clinical equivalence margin (mg/dL)
     forecast_clip = (40.0, 400.0)   # CGM sensor range; every expert forecast is clipped to it
     # Expert pool written to <id>_forecasts.csv (column names).
     experts = ["ARIMA", "ETS", "NHITS", "NODE", "XGBoost", "Persistence", "RunningMean"]
@@ -186,9 +189,11 @@ class GlobalValues:
         "HBML (fd)": "-",
         "HBML": "-",
         "HBML-SFH": "--",
-        "HBML-SFHDF": "-",
+        "HBML-SFH-Sqrt": "-",
+        "HBML-SFHDF": "--",
         "HBML-SFH-SD": "-.",
         "HBML-SFH-Meta": ":",
+        "FTL": ":",
         "HBML-VS": "--",
         "HBML-AH": "-.",
     }

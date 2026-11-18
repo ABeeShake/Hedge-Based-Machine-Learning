@@ -52,8 +52,9 @@ STATUS_NAME = {"non-T2D": "NoDiabetes", "pre-T2D": "Prediabetes", "T2D": "TypeTw
 MACRO_PREFIXES = ("RMSE", "CEG", "Wilcoxon", "Ttest", "PctImproved", "PctWorse", "NImproved", "NWorse", "NTotal",
                   "PairedDiff", "BestExpert", "StatAll", "StatWeinstock", "StatCgmacros", "StatCGMacros",
                   "Baseline", "Vol[A-Z]", "Timing", "NWeinstock", "NCgmacros", "NCGMacros", "NConfigs", "NTotalParticipants",
-                  "NParticipantConfigs", "NSecondarySubset", "Ablation", "GammaSens", "NExpertsWinning", "TopWinner", "SecondWinner",
-                  "Pop[A-Z]", "Cadence", "Grid", "Weight", "PoolSeven", "Clipped", "Hypo", "Regime", "Seed")
+                  "NParticipantConfigs", "NSecondarySubset", "NMinScored", "NExcluded", "Ablation", "GammaSens", "NExpertsWinning",
+                  "TopWinner", "SecondWinner", "Pop[A-Z]", "Cadence", "Grid", "Weight", "PoolSeven", "Clipped", "Hypo",
+                  "Regime", "Seed", "HodgesLehmann", "TOST", "Equiv", "Cmp", "WeightedRMSE", "PooledRMSE", "Env")
 
 
 def clean_name(name):
@@ -170,8 +171,20 @@ def best_expert_block(M, by_cfg, count_scope=None):
         M.add(f"RMSEBestExpert{frag}{hz}{cname}", best)
         M.num(f"RMSEBestExpertMean{frag}{hz}{cname}", bv)
         M.add(f"RMSEBestExpertSd{frag}{hz}{cname}", bsd)
-        M.num(f"RMSEReduction{frag}{hz}{cname}", (bv - hv) / bv * 100.0, 1)
+        rel_val = (bv - hv) / bv * 100.0
+        M.num(f"RMSEReduction{frag}{hz}{cname}", rel_val, 1)
+        M.num(f"AbsRMSEReduction{frag}{hz}{cname}", abs(rel_val), 1)
         M.num(f"RMSEDiff{frag}{hz}{cname}", bv - hv)
+        M.num(f"AbsRMSEDiff{frag}{hz}{cname}", abs(bv - hv))
+        if hv < bv - 0.005:
+            M.add(f"CmpVerbBest{frag}{hz}{cname}", "outperformed")
+            M.add(f"CmpAdjBest{frag}{hz}{cname}", "lower")
+        elif abs(hv - bv) <= 0.005:
+            M.add(f"CmpVerbBest{frag}{hz}{cname}", "matched")
+            M.add(f"CmpAdjBest{frag}{hz}{cname}", "equal")
+        else:
+            M.add(f"CmpVerbBest{frag}{hz}{cname}", "trailed")
+            M.add(f"CmpAdjBest{frag}{hz}{cname}", "higher")
         total += 1
         lowest += int(hv < bv)
     for frag, hz in sorted({(k[0], k[1]) for k in by_cfg}):
@@ -273,9 +286,17 @@ def generate_macros(strict=False, quiet=False):
     M.section("Paired participant-level tests: HBML vs best expert")
     rows = need("statistical_tests_best_expert.csv")
     n_by_ds = {}
+    n_by_ds_h = {}
     if rows:
+        ns_cfg_labels = []
+        better_cfg_labels = []
+        better30_labels = []
         for r in rows:
-            key = f"{dataset_label(r['dataset'])}{horizon_label(r['horizon'])}{CTX_NAME.get(str(r['context']).strip().lower(), 'Full')}"
+            ds_l = dataset_label(r["dataset"])
+            hz_l = horizon_label(r["horizon"])
+            ctx_raw = str(r["context"]).strip().lower()
+            cname = CTX_NAME.get(ctx_raw, "Full")
+            key = f"{ds_l}{hz_l}{cname}"
             f = lambda k: to_float(r.get(k, ""))
             M.add(f"WilcoxonP{key}", tex_p(f("wilcoxon_p")))
             M.add(f"WilcoxonPBH{key}", tex_p(f("wilcoxon_p_bh_best_family")))
@@ -288,13 +309,41 @@ def generate_macros(strict=False, quiet=False):
             M.add(f"BestExpert{key}", r.get("expert", ""))
             for stem, col in [("PairedDiffMean", "paired_diff_mean"), ("PairedDiffMeanLow", "ci95_mean_low"),
                               ("PairedDiffMeanHigh", "ci95_mean_high"), ("PairedDiffMedian", "paired_diff_median"),
-                              ("PairedDiffMedianLow", "ci95_med_low"), ("PairedDiffMedianHigh", "ci95_med_high")]:
+                              ("PairedDiffMedianLow", "ci95_med_low"), ("PairedDiffMedianHigh", "ci95_med_high"),
+                              ("HodgesLehmann", "hodges_lehmann"), ("HodgesLehmannLow", "hl_ci95_low"),
+                              ("HodgesLehmannHigh", "hl_ci95_high")]:
                 v = f(col)
                 if v is not None:
                     M.add(f"{stem}{key}", f"{v:+.2f}")
+            for pstem, pcol in [("TOSTWilcoxonP", "tost_wilcoxon_p"), ("TOSTTtestP", "tost_ttest_p"),
+                                ("TOSTRelFiveP", "tost_rel5_wilcoxon_p")]:
+                pv = f(pcol)
+                if pv is not None:
+                    M.add(f"{pstem}{key}", tex_p(pv))
+            dm = f("paired_diff_mean")
+            if dm is not None:
+                M.add(f"CmpSignDir{key}", "positive" if dm > 0 else ("zero" if abs(dm) < 5e-3 else "negative"))
+                M.add(f"CmpAdjDiff{key}", "reduction" if dm > 0 else "difference")
+            dir_bh = str(r.get("direction_bh", "")).strip()
+            ds_disp = "Weinstock 2016" if ds_l == "Weinstock" else "CGMacros"
+            hz_disp = "30-minute" if hz_l == "ThirtyMin" else ("2-hour" if hz_l == "TwoHour" else "5-hour")
+            ctx_disp = CTX_TEXT.get(ctx_raw, ctx_raw)
+            cfg_txt = f"{ds_disp} {hz_disp} ({ctx_disp})"
+            if dir_bh == "ns":
+                ns_cfg_labels.append(cfg_txt)
+            elif dir_bh == "hbml_better":
+                better_cfg_labels.append(cfg_txt)
+                if hz_l == "ThirtyMin":
+                    better30_labels.append(cfg_txt)
             n = to_float(r.get("n_participants", ""))
             if n is not None:
-                n_by_ds.setdefault(dataset_label(r["dataset"]), []).append(int(n))
+                n_by_ds.setdefault(ds_l, []).append(int(n))
+                n_by_ds_h.setdefault((ds_l, hz_l), []).append(int(n))
+        M.add("StatAllNSList", "; ".join(ns_cfg_labels) if ns_cfg_labels else "none")
+        M.add("StatAllBetterList", "; ".join(better_cfg_labels) if better_cfg_labels else "none")
+        M.add("StatAllBetterThirtyMinList", "; ".join(better30_labels) if better30_labels else "none")
+    for (ds_l, hz_l), ns in n_by_ds_h.items():
+        M.add(f"N{ds_l}{hz_l}", max(ns))
     rows = need("statistical_summary.csv")
     if rows:
         key_name = {"n_configs": "NConfigs", "n_hbml_lowest_mean": "NHBMLLowestMean",
@@ -303,7 +352,11 @@ def generate_macros(strict=False, quiet=False):
                     "n_sig_bh_hbml_worse": "NSigBHWorse", "n_not_sig_bh": "NNotSigBH",
                     "pct_improved_min": "PctImprovedMin", "pct_improved_max": "PctImprovedMax",
                     "n_participants_min": "NParticipantsMin", "n_participants_max": "NParticipantsMax",
-                    "n_shapiro_reject": "NShapiroReject", "n_boot": "NBoot", "fdr_q": "FDRq"}
+                    "n_shapiro_reject": "NShapiroReject", "n_boot": "NBoot", "fdr_q": "FDRq",
+                    "n_equiv_wilcoxon": "NEquivWilcoxon", "n_configs_30min": "NConfigsThirtyMin",
+                    "n_equiv_wilcoxon_30min": "NEquivWilcoxonThirtyMin",
+                    "n_equiv_ttest_30min": "NEquivTtestThirtyMin",
+                    "equiv_margin_mgdl": "EquivMarginMgdl"}
         scope_name = {"all": "All", "weinstock": "Weinstock", "cgmacros": "Cgmacros"}
         for r in rows:
             if r["key"] == "source":
@@ -342,6 +395,39 @@ def generate_macros(strict=False, quiet=False):
         M.add("NParticipantConfigs", f"{tot_p * 12:,}".replace(",", "{,}"))
     M.add("NConfigs", "24")
     M.add("NSecondarySubset", "20")
+    try:
+        sys.path.insert(0, BASE_DIR)
+        from ExpMethods.globals import GlobalValues as _GV_N
+        M.add("NMinScored", int(getattr(_GV_N, "min_scored_points", 288)))
+        M.num("EquivMarginMgdl", float(getattr(_GV_N, "equiv_margin_mgdl", 1.0)), 1)
+    except Exception:
+        M.add("NMinScored", "288")
+        M.add("EquivMarginMgdl", "1.0")
+
+    ex_sum = read_rows("rmse_exclusions_summary.csv")
+    if ex_sum:
+        sources.append("rmse_exclusions_summary.csv")
+        by_ds_h_ex = {}
+        for r in ex_sum:
+            ds_k = dataset_label(r["dataset"])
+            hz_k = horizon_label(r["horizon"])
+            M.add(f"NExcluded{ds_k}{hz_k}", r.get("n_excluded", "0"))
+            by_ds_h_ex[(ds_k, hz_k)] = int(float(r.get("n_excluded", 0) or 0))
+    else:
+        for ds_k in ("Weinstock", "Cgmacros"):
+            for hz_k in ("ThirtyMin", "TwoHour", "FiveHour"):
+                M.add(f"NExcluded{ds_k}{hz_k}", "0")
+
+    w_sens = read_rows("rmse_weighted_sensitivity.csv")
+    if w_sens:
+        sources.append("rmse_weighted_sensitivity.csv")
+        for r in w_sens:
+            frag = dataset_label(r["dataset"])
+            hz = horizon_label(r["horizon"])
+            mod = clean_name(r["model"])
+            cname = CTX_NAME.get(str(r["context"]).strip().lower(), "Full")
+            M.num(f"WeightedRMSE{frag}{hz}{mod}{cname}", to_float(r.get("weighted_mean_rmse", "")))
+            M.num(f"PooledRMSE{frag}{hz}{mod}{cname}", to_float(r.get("pooled_point_rmse", "")))
 
     # 6. Baselines
     M.section("Naive baselines (persistence, running mean, uniform ensemble)")
@@ -357,10 +443,17 @@ def generate_macros(strict=False, quiet=False):
             if r.get("status", "ok") != "ok":
                 n_empty += 1
                 continue
+            hb_v = to_float(r.get("hbml_rmse", ""))
             for b, bname in [("persistence", "Persistence"), ("climatology", "Climatology"), ("uniform", "Uniform")]:
-                M.num(f"Baseline{bname}{ds}{hz}{cname}", to_float(r.get(f"{b}_rmse", "")))
+                bv = to_float(r.get(f"{b}_rmse", ""))
+                M.num(f"Baseline{bname}{ds}{hz}{cname}", bv)
                 red = to_float(r.get(f"hbml_reduction_vs_{b}_pct", ""))
                 M.num(f"BaselineReduction{bname}{ds}{hz}{cname}", red, 1)
+                if red is not None:
+                    M.num(f"BaselineAbsReduction{bname}{ds}{hz}{cname}", abs(red), 1)
+                if bv is not None and hb_v is not None:
+                    M.add(f"BaselineCmpVerb{bname}{ds}{hz}{cname}",
+                          "outperformed" if hb_v < bv - 0.005 else ("matched" if abs(hb_v - bv) <= 0.005 else "trailed"))
                 M.num(f"BaselinePctImproved{bname}{ds}{hz}{cname}", to_float(r.get(f"pct_improved_vs_{b}", "")), 1)
                 M.add(f"BaselineP{bname}{ds}{hz}{cname}", tex_p(to_float(r.get(f"wilcoxon_p_vs_{b}", ""))))
                 if red is not None and red == red:
@@ -368,6 +461,9 @@ def generate_macros(strict=False, quiet=False):
         for (bname, ds, hz), v in rng.items():
             M.num(f"BaselineReduction{bname}{ds}{hz}Min", min(v), 1)
             M.num(f"BaselineReduction{bname}{ds}{hz}Max", max(v), 1)
+            av = [abs(x) for x in v]
+            M.num(f"BaselineAbsReduction{bname}{ds}{hz}Min", min(av), 1)
+            M.num(f"BaselineAbsReduction{bname}{ds}{hz}Max", max(av), 1)
         if n_empty:
             warnings_.append(f"{n_empty} baseline configuration(s) are empty (run calculate_baselines.py where the forecasts are)")
 
@@ -484,8 +580,11 @@ def generate_macros(strict=False, quiet=False):
     if os.path.exists(fs_path):
         with open(fs_path, newline="") as f:
             fs_rows = list(csv.DictReader(f))
+        prim_var = (fs_rows[0].get("primary_variant") or "current").strip() if fs_rows else "current"
+        prim_code = "SFHSqrt" if prim_var == "sfh_sqrt" else "SFHDF"
+        prim_label_name = "HBML-SFH-Sqrt" if prim_var == "sfh_sqrt" else "HBML-SFHDF"
         var_map = {
-            "current": "Primary",
+            "current": "SFHDF",
             "cum_decaymax": "CumDecayMax",
             "sfh_sqrt": "SFHSqrt",
             "ftl": "FTL",
@@ -522,17 +621,43 @@ def generate_macros(strict=False, quiet=False):
                 wins_ds_v[(ds_k, vcode)] += 1
             if cname == "Full" and m_rmse is not None:
                 table_cells[(ds_k, vcode)][hz_k] = m_rmse
+            if vcode == prim_code:
+                M.num(f"AblationRMSEPrimary{ds_k}{hz_k}{cname}", m_rmse)
+                if pct_ch is not None:
+                    M.add(f"AblationRelChangePrimary{ds_k}{hz_k}{cname}", f"{pct_ch:+.2f}")
         for (ds_k, vcode), vals in sorted(by_ds_v.items()):
             mean_ch = sum(vals) / len(vals)
             M.add(f"AblationMeanRelChange{vcode}{ds_k}", f"{mean_ch:+.2f}")
             M.num(f"AblationAbsMeanRelChange{vcode}{ds_k}", abs(mean_ch), 2)
+            M.add(f"AblationDirVerb{vcode}{ds_k}", "reduced" if mean_ch < -1e-9 else "increased")
             M.add(f"AblationNWins{vcode}{ds_k}", wins_ds_v[(ds_k, vcode)])
             M.add(f"AblationNConds{vcode}{ds_k}", n_conds_ds_v[(ds_k, vcode)])
-        # Write overleaf/tables/table_aggregator_ablation.tex
+            if vcode == prim_code:
+                M.add(f"AblationMeanRelChangePrimary{ds_k}", f"{mean_ch:+.2f}")
+                M.num(f"AblationAbsMeanRelChangePrimary{ds_k}", abs(mean_ch), 2)
+                M.add(f"AblationNWinsPrimary{ds_k}", wins_ds_v[(ds_k, vcode)])
+                M.add(f"AblationNCondsPrimary{ds_k}", n_conds_ds_v[(ds_k, vcode)])
+
+        # Also expose direct SFHSqrt vs SFHDF comparison macros regardless of which row is base
+        for ds_k in ("Weinstock", "Cgmacros"):
+            ch_sqrt = to_float(M.defs.get(f"AblationMeanRelChangeSFHSqrt{ds_k}", ""))
+            ch_sfhdf = to_float(M.defs.get(f"AblationMeanRelChangeSFHDF{ds_k}", ""))
+            if prim_code == "SFHSqrt" and ch_sfhdf is not None:
+                # SFHDF relative to SFHSqrt is positive when SFHSqrt is lower; express reduction of SFHSqrt vs SFHDF
+                M.num(f"AblationSqrtRedVsSFHDF{ds_k}", ch_sfhdf, 2)
+                w_sfhdf = int(M.defs.get(f"AblationNWinsSFHDF{ds_k}", 0))
+                n_sfhdf = int(M.defs.get(f"AblationNCondsSFHDF{ds_k}", 12))
+                M.add(f"AblationSqrtWinsVsSFHDF{ds_k}", n_sfhdf - w_sfhdf)
+                M.add(f"AblationSqrtCondsVsSFHDF{ds_k}", n_sfhdf)
+            elif ch_sqrt is not None:
+                M.num(f"AblationSqrtRedVsSFHDF{ds_k}", -ch_sqrt, 2)
+                M.add(f"AblationSqrtWinsVsSFHDF{ds_k}", M.defs.get(f"AblationNWinsSFHSqrt{ds_k}", "0"))
+                M.add(f"AblationSqrtCondsVsSFHDF{ds_k}", M.defs.get(f"AblationNCondsSFHSqrt{ds_k}", "12"))
+
         ablation_order = [
-            ("Primary", "HBML-SFHDF (primary: cumulative, EMA scale $1/L_t$, $\\alpha=0$)"),
+            ("SFHSqrt", "Orabona--P\\'al $\\sqrt{t}$-Scale-Free Hedge (HBML-SFH-Sqrt" + (", primary" if prim_code == "SFHSqrt" else "") + "; $\\eta_t = \\sqrt{\\ln K / \\sum_s M_s^2}$)"),
+            ("SFHDF", "HBML-SFHDF (" + ("primary: " if prim_code == "SFHDF" else "variant: ") + "cumulative, EMA scale $1/L_t$, $\\alpha=0$, $\\gamma=0.20$)"),
             ("CumDecayMax", "Cumulative Scale-Free Hedge, decayed-max scale ($\\alpha=0$)"),
-            ("SFHSqrt", "Orabona--P\\'al $\\sqrt{t}$-Scale-Free Hedge ($\\eta_t = \\sqrt{\\ln K / \\sum_s M_s^2}$)"),
             ("FTL", "Follow-the-Leader (FTL, hard $\\arg\\min_k C_{t,k}$)"),
             ("RecNoShare", "Recursive Scale-Free Hedge, decayed-max scale ($\\alpha=0$)"),
             ("FSFastDecay", "HBML-FS (recursive Fixed-Share, $\\alpha_n = (n+1)^{-2}$)"),
@@ -542,6 +667,8 @@ def generate_macros(strict=False, quiet=False):
             ("FSConstHigh", "Recursive Fixed-Share (constant $\\alpha = 0.05$)"),
             ("Uniform", "Equal-weight uniform ensemble ($p_{t,k} = 1/K$)"),
         ]
+        if prim_code == "SFHDF":
+            ablation_order = [ablation_order[1], ablation_order[2], ablation_order[0]] + ablation_order[3:]
         t_lines = [
             r"\begin{table*}[t]",
             r"\centering",
@@ -560,7 +687,7 @@ def generate_macros(strict=False, quiet=False):
                 c5h = table_cells[(ds_k, vcode)].get("FiveHour")
                 mch = M.defs.get(f"AblationMeanRelChange{vcode}{ds_k}", "---")
                 nc = M.defs.get(f"AblationNConds{vcode}{ds_k}", "12")
-                wns = "---" if vcode == "Primary" else f"{M.defs.get(f'AblationNWins{vcode}{ds_k}', '0')}/{nc}"
+                wns = "---" if vcode == prim_code else f"{M.defs.get(f'AblationNWins{vcode}{ds_k}', '0')}/{nc}"
                 s30 = f"{c30:.2f}" if c30 is not None else "---"
                 s2h = f"{c2h:.2f}" if c2h is not None else "---"
                 s5h = f"{c5h:.2f}" if c5h is not None else "---"
@@ -569,10 +696,10 @@ def generate_macros(strict=False, quiet=False):
             r"\bottomrule",
             r"\end{tabular}",
             r"\caption{\textbf{Ablation across online aggregation rules, loss-scale estimators, Follow-the-Leader, and Fixed-Share mixing schedules.} "
-            r"All variants aggregate the identical constituent expert forecasts over the identical participant cohorts and evaluation windows. "
+            r"All variants aggregate the identical constituent expert forecasts over the identical retained participant cohorts and evaluation windows. "
             r"Columns 3--5 report cohort-mean participant-level RMSE (mg/dL) in the full-history configuration at the 30-minute, 2-hour, and 5-hour horizons. "
-            r"``Mean $\Delta\%$'' is the mean percentage change in RMSE relative to the primary HBML-SFHDF algorithm across evaluated horizon $\times$ context configurations per dataset (negative values indicate lower error than HBML-SFHDF; positive values indicate higher error). "
-            r"``Wins / $N_{\text{cfg}}$'' counts configurations in which the variant achieved lower cohort-mean RMSE than HBML-SFHDF.}",
+            f"``Mean $\\Delta\\%$'' is the mean percentage change in RMSE relative to {prim_label_name} across evaluated horizon $\\times$ context configurations per dataset (negative values indicate lower error than {prim_label_name}; positive values indicate higher error). "
+            f"``Wins / $N_{{\\text{{cfg}}}}$'' counts configurations in which the variant achieved lower cohort-mean RMSE than {prim_label_name}.}}",
             r"\label{tab:aggregator_ablation}",
             r"\end{table*}",
         ]
@@ -681,7 +808,9 @@ def generate_macros(strict=False, quiet=False):
             M.add(f"HypoEpisodes{ds_k}{hz_k}", r.get("n_episodes", ""))
             M.add(f"HypoDetected{key}", r.get("n_detected", ""))
             M.num(f"HypoEpSens{key}", to_float(r.get("episode_sensitivity_pct", "")), 1)
+            M.num(f"HypoEpSensAny{key}", to_float(r.get("episode_sensitivity_any_pct", r.get("episode_sensitivity_pct", ""))), 1)
             M.num(f"HypoLeadTime{key}", to_float(r.get("mean_lead_time_min", "")), 1)
+            M.num(f"HypoLeadTimeDet{key}", to_float(r.get("mean_lead_time_detected_min", r.get("mean_lead_time_min", ""))), 1)
             M.num(f"HypoPointSens{key}", to_float(r.get("point_sensitivity_pct", "")), 1)
             M.num(f"HypoPointPPV{key}", to_float(r.get("point_ppv_pct", "")), 1)
             M.num(f"HypoPointFOne{key}", to_float(r.get("point_f1_pct", "")), 1)
@@ -701,17 +830,34 @@ def generate_macros(strict=False, quiet=False):
             "RECOVERY": "Recovery",
             "HYPO_TRANS": "HypoTrans",
         }
+        reg_out_cnt = {"Weinstock": 0, "Cgmacros": 0}
         for r in rows:
             ds_k = dataset_label(r["dataset"])
             rg_k = reg_map.get(r["regime"], clean_name(r["regime"]))
             key = f"{rg_k}{ds_k}"
+            hb_v = to_float(r.get("hbml_rmse", ""))
+            be_v = to_float(r.get("best_expert_rmse", ""))
             M.num(f"RegimeShare{key}", to_float(r.get("step_share_pct", "")), 1)
-            M.num(f"RegimeHBMLRMSE{key}", to_float(r.get("hbml_rmse", "")), 2)
+            M.num(f"RegimeHBMLRMSE{key}", hb_v, 2)
             M.add(f"RegimeBestExpert{key}", r.get("best_expert", ""))
-            M.num(f"RegimeBestExpertRMSE{key}", to_float(r.get("best_expert_rmse", "")), 2)
+            M.num(f"RegimeBestExpertRMSE{key}", be_v, 2)
             M.add(f"RegimeTopFreqExpert{key}", r.get("top_freq_expert", ""))
             M.num(f"RegimeTopFreqPct{key}", to_float(r.get("top_freq_pct", "")), 1)
             M.num(f"RegimeHBMLFreqPct{key}", to_float(r.get("hbml_freq_pct", "")), 1)
+            if hb_v is not None and be_v is not None and be_v > 0:
+                if hb_v < be_v - 0.005:
+                    M.add(f"RegimeCmpVerb{key}", "outperformed")
+                    M.add(f"RegimeCmpAdj{key}", "lower")
+                    reg_out_cnt[ds_k] = reg_out_cnt.get(ds_k, 0) + 1
+                elif abs(hb_v - be_v) <= 0.005:
+                    M.add(f"RegimeCmpVerb{key}", "matched")
+                    M.add(f"RegimeCmpAdj{key}", "comparable")
+                else:
+                    M.add(f"RegimeCmpVerb{key}", "trailed")
+                    M.add(f"RegimeCmpAdj{key}", "higher")
+                M.num(f"RegimeAbsRelGap{key}", abs(hb_v - be_v) / be_v * 100.0, 1)
+        for ds_k, cnt in reg_out_cnt.items():
+            M.add(f"RegimeNOutperformed{ds_k}", cnt)
 
     M.section("Secondary analysis: multi-seed stochastic stability")
     rows = read_rows("seed_stability.csv")
@@ -800,6 +946,19 @@ def generate_macros(strict=False, quiet=False):
             M.num(f"Cadence{hw}RelPctHBML{key}", to_float(r.get("HBML_rel_pct_vs_ref", "")), 1)
             M.add(f"Cadence{hw}PHBML{key}", tex_p(to_float(r.get("HBML_p_vs_ref", ""))))
 
+    M.section("Runtime environment versions")
+    env_rows = read_rows("runtime_env.csv")
+    if env_rows:
+        sources.append("runtime_env.csv")
+        env_map = {r["package"]: r["version"] for r in env_rows}
+    else:
+        env_map = {"python": "3.11+", "numpy": "1.26+", "scipy": "1.13+", "pandas": "2.2+"}
+    for pkg, nm in (("python", "Python"), ("numpy", "Numpy"), ("scipy", "Scipy"), ("pandas", "Pandas"),
+                    ("torch", "Torch"), ("xgboost", "Xgboost"), ("statsforecast", "Statsforecast"),
+                    ("neuralforecast", "Neuralforecast")):
+        if pkg in env_map:
+            M.add(f"Env{nm}Version", env_map[pkg])
+
     # Macros used in the manuscript
     used = set()
     tex_files = [os.path.join(SECTIONS_DIR, f) for f in ("introduction.tex", "results.tex", "discussion.tex", "methods.tex")]
@@ -840,11 +999,17 @@ def generate_macros(strict=False, quiet=False):
         f.write("\n".join(out) + "\n")
     os.replace(tmp, OUTPUT_FILE)
 
-    # Tables generated in the same pipeline run should have similar ages.
+    # Tables and figures generated in the same pipeline run should have similar ages.
     core = [mt[s] for s in ("rmse_pivot_mean.csv", "statistical_tests_best_expert.csv", "baselines_comparison.csv",
                             "max_ceg.csv") if s in mt]
     if core and max(core) - min(core) > 6 * 3600:
         warnings_.append("core tables were written more than 6 hours apart; some of them may be stale")
+    if "rmse_pivot_mean.csv" in mt:
+        ref_t = mt["rmse_pivot_mean.csv"]
+        for ds_fig in ("weinstock", "cgmacros"):
+            fig_p = os.path.join(BASE_DIR, "overleaf", "images", "regimes", f"fig3_stacked_freq_{ds_fig}_hhalf_cfull.pdf")
+            if os.path.exists(fig_p) and (ref_t - os.path.getmtime(fig_p) > 6 * 3600):
+                warnings_.append(f"stale regime figure (>6 h older than rmse_pivot_mean.csv): {os.path.relpath(fig_p, BASE_DIR)}")
     if not quiet:
         print(f"Generated {len(M.defs)} macros in {OUTPUT_FILE}")
         for w in warnings_:

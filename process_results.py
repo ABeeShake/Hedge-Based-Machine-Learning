@@ -227,6 +227,10 @@ def get_methods_advanced(settings, **kwargs):
             **base,
             method_type="scale_free_hedge",
         ),
+        "HBML-SFH-Sqrt": dict(
+            **base,
+            method_type="scale_free_hedge_sqrt",
+        ),
         "HBML-SFHDF": dict(
             **base,
             method_type="scale_free_hedge_df",
@@ -247,6 +251,10 @@ def get_methods_advanced(settings, **kwargs):
             method_type="fixed_share_sf",
             gamma=sfhdf_gamma,
             alpha="fd",
+        ),
+        "FTL": dict(
+            **base,
+            method_type="ftl",
         ),
     }
 
@@ -596,6 +604,7 @@ def main():
     rmse_long["context"] = context
     rmse_long["eta"] = args.eta
     rmse_long["dataset"] = dataset_name
+    rmse_long["n_scored"] = rmse_long["id"].map(n_scored_accum).fillna(0).astype(int)
     
     # Number of scored rows (real reading + issued forecast) per participant, for the coverage macros
     pd.DataFrame({"id": list(n_scored_accum), "n_scored": list(n_scored_accum.values())}).to_csv(
@@ -906,7 +915,7 @@ def plot_bumpchart(avgrdict, omit = [], start = 100, end = -100, **kwargs):
     save_file = kwargs.get("save_file","average_regrets.pdf")
     title = kwargs.get("title")
     show = kwargs.get("show",False)
-    hedge_version = kwargs.get("hedge_version","HBML-SFHDF")
+    hedge_version = kwargs.get("hedge_version", GlobalValues.primary_hbml)
     
     hedge_keys = list(filter(lambda x: re.findall("HBML",string=x), avgrdict.keys()))
     if hedge_version:

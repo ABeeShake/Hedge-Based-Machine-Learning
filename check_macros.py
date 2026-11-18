@@ -123,10 +123,32 @@ def main():
     lint = []
     if not a.no_lint:
         allow = re.compile("|".join(ALLOW))
+        bad_sign_pats = [
+            ("negative reduction phrase", re.compile(r"\b(?:positive\s+mean\s+paired\s+reduction|reduction\s+of|reduced[^.\n]{0,40}\bby|improved[^.\n]{0,40}\bby|within)\s+(?:approximately\s+)?-\d", re.I)),
+            ("negative sign after lower/higher", re.compile(r"\b(?:within)\s+[\$]?-?\d+(?:\.\d+)?\\%\s+(?:and|to)\s+[\$]?-\d", re.I)),
+        ]
+        expand_pat = re.compile(r"\\([A-Za-z]+)(?:\{\})?")
+        def _expand_line(ln):
+            return expand_pat.sub(lambda m: value.get(m.group(1), m.group(0)), ln)
+
+        # Abstract expanded word count check (limit 150 words for npj Digital Medicine)
+        abs_lines = [line for _, line in prose_lines(os.path.join(OVERLEAF, "main.tex"), abstract_only=True)]
+        abs_raw = " ".join(l for l in abs_lines if "\\begin{abstract}" not in l and "\\end{abstract}" not in l)
+        abs_exp = _expand_line(abs_raw)
+        abs_exp = re.sub(r"\\[A-Za-z]+\*?(?:\[[^\]]*\])?", " ", abs_exp)
+        abs_exp = abs_exp.replace("~", " ").replace("---", " ").replace("--", " ").replace("{", "").replace("}", "").replace("$", "")
+        abs_words = [w for w in re.split(r"\s+", abs_exp.strip()) if w and not re.fullmatch(r"[,.;:()%]+", w)]
+        if len(abs_words) > 150:
+            problems.append(f"expanded abstract has {len(abs_words)} words (limit: 150)")
+
         for path, abs_only in files + ([methods] if a.include_methods else []):
             if not os.path.exists(path):
                 continue
             for no, line in prose_lines(path, abs_only):
+                exp = _expand_line(line)
+                for skind, spat in bad_sign_pats:
+                    if spat.search(exp):
+                        lint.append(f"{os.path.basename(path)}:{no}: {skind} in expanded text: '{exp.strip()[:120]}'")
                 masked = allow.sub(lambda m: " " * len(m.group(0)), line)
                 masked = re.sub(r"\\cite\{[^}]*\}|\\ref\{[^}]*\}|\\eqref\{[^}]*\}", "", masked)
                 for kind, pat in NUM_PATS:
@@ -134,7 +156,7 @@ def main():
                         ctx = masked[max(0, m.start() - 45): m.end() + 25].strip()
                         lint.append(f"{os.path.basename(path)}:{no}: hand-typed {kind} '{m.group(0).strip()}'  ...{ctx}...")
 
-    print(f"{len(used)} result macros used in the manuscript; {len(value)} defined.")
+    print(f"{len(used)} result macros used in the manuscript; {len(value)} defined. (Abstract: {len(abs_words) if not a.no_lint else 'N/A'} words)")
     for p in problems:
         print("FAIL:", p)
     for l in lint:

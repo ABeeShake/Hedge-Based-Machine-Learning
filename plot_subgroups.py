@@ -8,7 +8,7 @@ from ExpMethods.globals import GlobalValues
 
 COLORS = GlobalValues.color_params
 # map HBML aliases
-for var in ["HBML-SFHDF", "HBML-SFH", "HBML (c)", "HBML (d)", "HBML (fd)"]:
+for var in ["HBML-SFH-Sqrt", "HBML-SFHDF", "HBML-SFH", "HBML (c)", "HBML (d)", "HBML (fd)"]:
     COLORS[var] = COLORS.get("HBML", "#d62728")
 
 def get_diabetic_status(patient_id):
@@ -27,8 +27,10 @@ def clean_data(df, is_ceg=False):
         return df
     
     # drop old/non-primary hbml variants
-    df = df[~df["model"].isin(["HBML (c)", "HBML (d)", "HBML (fd)", "HBML-SFH", "HBML-SFH-SD", "HBML-SFH-Meta", "LSTM", "Autoformer", "FS (Start)", "FS (Uniform)", "FS (Decay)"])].copy()
-    df.loc[df["model"].isin(["HBML-SFHDF"]), "model"] = "HBML"
+    primary = GlobalValues.primary_hbml
+    other = [m for m in GlobalValues.hbml_variants if m != primary]
+    df = df[~df["model"].isin(other + ["FTL", "LSTM", "Autoformer", "FS (Start)", "FS (Uniform)", "FS (Decay)"])].copy()
+    df.loc[df["model"] == primary, "model"] = "HBML"
     df.loc[df["horizon"] == "half", "horizon"] = "0.5"
     
     df["status"] = df["id"].apply(get_diabetic_status)

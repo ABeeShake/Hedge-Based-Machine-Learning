@@ -143,14 +143,61 @@ class XGBoostExpert(BaseExpert):
         return history[-1] + float(self.booster.predict(xgb.DMatrix(x))[0])
 
 
+def chronological_val_split(pool, horizon, min_train=16, min_val=5):
+    """Split sorted eligible end indices into chronological train and held-out validation pools."""
+    pool = np.asarray(pool, dtype=int)
+    if len(pool) < min_train + min_val:
+        return pool, np.zeros(0, dtype=int)
+    n_val = max(min_val, len(pool) // 5)
+    val_ends = pool[-n_val:]
+    strict_train = pool[pool + horizon < val_ends[0]]
+    train_ends = strict_train if len(strict_train) >= min_train else pool[:-n_val]
+    return train_ends, val_ends
+
+
+def _fit_early_stopping(torch, net, opt, n_steps, val_loss_fn, step_fn,
+                        eval_every=20, patience=4, max_grad_norm=1.0):
+    """Run up to `n_steps` gradient updates with clipping and validation early stopping."""
+    has_val = val_loss_fn is not None
+    if has_val:
+        net.eval()
+        with torch.no_grad():
+            best_val = float(val_loss_fn())
+        best_state = {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}
+        stale = 0
+    net.train()
+    for step in range(1, n_steps + 1):
+        loss = step_fn()
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(net.parameters(), max_grad_norm)
+        opt.step()
+        if has_val and (step % eval_every == 0 or step == n_steps):
+            net.eval()
+            with torch.no_grad():
+                v = float(val_loss_fn())
+            if np.isfinite(v) and v < best_val * (1.0 - 1e-4):
+                best_val = v
+                best_state = {k: val.detach().cpu().clone() for k, val in net.state_dict().items()}
+                stale = 0
+            else:
+                stale += 1
+                if stale >= patience:
+                    break
+            net.train()
+    if has_val:
+        net.load_state_dict({k: v.to(next(net.parameters()).device) for k, v in best_state.items()})
+    net.eval()
+
+
 class NODEExpert(BaseExpert):
-    """Neural ODE on standardised glucose: integrates h steps from the latest reading.
-    Each refit runs `fit_steps` Adam steps (first fit: `first_fit_steps`) on mini-batches of
-    h-step trajectories drawn from all readings observed so far, warm-starting from the
-    previous weights."""
+    """Neural ODE on standardised glucose integrated over normalized unit interval [0, 1].
+    Each refit runs up to `fit_steps` Adam steps (first fit: `first_fit_steps`) on mini-batches of
+    h-step trajectories with gradient clipping and early stopping on a chronological 20% validation
+    split, warm-starting from the previous best checkpoint."""
     name = "NODE"
 
-    def __init__(self, hidden_dim=64, lr=1e-3, weight_decay=1e-4, batch_size=32,
+    def __init__(self, hidden_dim=64, lr=1e-3, weight_decay=1e-3, batch_size=32,
                  first_fit_steps=300, fit_steps=100, device=None, **kw):
         super().__init__(**kw)
         import torch
@@ -161,11 +208,20 @@ class NODEExpert(BaseExpert):
         params = m.DefaultModelParams.node_params(horizon=self.horizon, hidden_dim=hidden_dim)
         params["sensitivity"] = "autograd"   # direct backprop: far faster than adjoint for this small field
         self.net = m.NODE(**params).to(self.device)
-        self.t_span = self.net.t_span.to(self.device)
+        # Integrate over normalized tau in [0, 1] so DepthCat time injection remains O(1) across h in {6, 24, 60}.
+        self.t_span = torch.linspace(0.0, 1.0, self.horizon + 1, device=self.device)
         self.opt = torch.optim.Adam(self.net.parameters(), lr=lr, weight_decay=weight_decay)
         self.batch_size, self.first_fit_steps, self.fit_steps = batch_size, first_fit_steps, fit_steps
         self.rng = np.random.default_rng(self.seed)
         self.mu, self.sd = 0.0, 1.0
+
+    def _traj_loss(self, z, ends, offs):
+        torch = self.torch
+        s = torch.as_tensor(ends, dtype=torch.long, device=self.device)
+        x0 = z[s].unsqueeze(-1)
+        target = z[s[:, None] + offs]
+        traj = self.net(x0, self.t_span)[1]
+        return torch.nn.functional.mse_loss(traj[1:, :, 0].T, target)
 
     def fit(self, history):
         torch = self.torch
@@ -173,22 +229,18 @@ class NODEExpert(BaseExpert):
         pool = ft.eligible_ends(self.valid, t, h, need_path=True)
         if len(pool) == 0:
             return
+        train_ends, val_ends = chronological_val_split(pool, h)
         ref = history if self.valid is None else history[self.valid]
         self.mu, self.sd = float(ref.mean()), float(max(ref.std(), 1.0))
         z = torch.tensor((history - self.mu) / self.sd, dtype=torch.float32, device=self.device)
         n_steps = self.first_fit_steps if not self.fit_seconds else self.fit_steps
+        if len(val_ends) == 0:
+            n_steps = min(n_steps, 50)
         offs = torch.arange(1, h + 1, device=self.device)
-        self.net.train()
-        for _ in range(n_steps):
-            s = torch.as_tensor(self.rng.choice(pool, self.batch_size), device=self.device)
-            x0 = z[s].unsqueeze(-1)                                  # (b, 1)
-            target = z[s[:, None] + offs]                            # (b, h): y[s+1 .. s+h]
-            traj = self.net(x0, self.t_span)[1]                      # (h+1, b, 1); traj[j] = time j
-            loss = torch.nn.functional.mse_loss(traj[1:, :, 0].T, target)
-            self.opt.zero_grad(set_to_none=True)
-            loss.backward()
-            self.opt.step()
-        self.net.eval()
+        val_sub = val_ends if len(val_ends) <= 256 else val_ends[-256:]
+        val_fn = (lambda: float(self._traj_loss(z, val_sub, offs))) if len(val_ends) > 0 else None
+        step_fn = lambda: self._traj_loss(z, self.rng.choice(train_ends, self.batch_size), offs)
+        _fit_early_stopping(torch, self.net, self.opt, n_steps, val_fn, step_fn)
 
     def predict(self, history):
         torch = self.torch
@@ -198,14 +250,13 @@ class NODEExpert(BaseExpert):
 
 
 class NHITSExpert(BaseExpert):
-    """N-HITS (NeuralForecast module) trained with Adam on input/target windows from all readings
-    observed so far, expressed relative to the last input value (fast_engine.features.neural_windows).
-    Warm-started at each refit. Input length = context_len (120 steps for full history). Input
-    windows may reach back across a long gap (bridged values); targets never lie in one."""
+    """N-HITS (NeuralForecast module) trained with AdamW regularization, gradient clipping, and
+    early stopping on the chronologically held-out final 20% of observed windows up to slot t.
+    Warm-started at each refit. Input length = context_len (120 steps for full history)."""
     name = "NHITS"
 
-    def __init__(self, mlp_width=128, lr=1e-3, batch_size=64, first_fit_steps=500, fit_steps=150,
-                 device=None, **kw):
+    def __init__(self, mlp_width=64, lr=5e-4, weight_decay=1e-3, batch_size=64,
+                 first_fit_steps=400, fit_steps=120, device=None, **kw):
         super().__init__(**kw)
         import torch
         from neuralforecast.models import NHITS
@@ -215,7 +266,7 @@ class NHITSExpert(BaseExpert):
         self.input_size = self.context_len or 120
         self.net = NHITS(h=self.horizon, input_size=self.input_size, max_steps=1,
                          mlp_units=3 * [[mlp_width, mlp_width]]).to(self.device)
-        self.opt = torch.optim.Adam(self.net.parameters(), lr=lr)
+        self.opt = torch.optim.Adam(self.net.parameters(), lr=lr, weight_decay=weight_decay)
         self.batch_size, self.first_fit_steps, self.fit_steps = batch_size, first_fit_steps, fit_steps
         self.rng = np.random.default_rng(self.seed)
 
@@ -233,17 +284,25 @@ class NHITSExpert(BaseExpert):
         pool = ft.eligible_ends(self.valid, t, h, need_path=True)
         if len(pool) == 0:
             return
+        train_ends, val_ends = chronological_val_split(pool, h)
         n_steps = self.first_fit_steps if not self.fit_seconds else self.fit_steps
-        self.net.train()
-        for _ in range(n_steps):
-            ends = self.rng.choice(pool, self.batch_size)
+        if len(val_ends) == 0:
+            n_steps = min(n_steps, 40)
+            val_fn = None
+        else:
+            val_sub = val_ends if len(val_ends) <= 256 else val_ends[-256:]
+            Xv, Yv, _ = ft.neural_windows(history, val_sub, self.input_size, h)
+            Yv_t = torch.as_tensor(Yv, dtype=torch.float32, device=self.device)
+            val_fn = lambda: float(torch.nn.functional.mse_loss(self._run(Xv), Yv_t))
+
+        def step_fn():
+            ends = self.rng.choice(train_ends, self.batch_size)
             Xn, Yn, _ = ft.neural_windows(history, ends, self.input_size, h)
-            loss = torch.nn.functional.mse_loss(self._run(Xn), torch.as_tensor(Yn, dtype=torch.float32,
-                                                                                device=self.device))
-            self.opt.zero_grad(set_to_none=True)
-            loss.backward()
-            self.opt.step()
-        self.net.eval()
+            return torch.nn.functional.mse_loss(
+                self._run(Xn), torch.as_tensor(Yn, dtype=torch.float32, device=self.device)
+            )
+
+        _fit_early_stopping(torch, self.net, self.opt, n_steps, val_fn, step_fn)
 
     def predict(self, history):
         Xn, base = ft.neural_windows(history, np.array([len(history) - 1]), self.input_size)

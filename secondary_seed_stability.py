@@ -27,6 +27,7 @@ sys.path.insert(0, BASE)
 from ExpMethods import aggregators as agg  # noqa: E402
 from ExpMethods import evaluation as ev  # noqa: E402
 from ExpMethods.globals import GlobalValues as G  # noqa: E402
+from fast_engine.simulation import ENGINE_VERSION  # noqa: E402
 
 OUT_ROOT = os.path.join(BASE, "Outputs", "secondary", "seeds")
 TABLES = os.path.join(BASE, "overleaf", "tables")
@@ -67,7 +68,7 @@ def stage_evaluate(a):
                 for f in ev.forecast_files(d):
                     pid = os.path.basename(f)[:3]
                     meta = ev.read_meta(f)
-                    if not meta or meta["settings"].get("seed") != s:
+                    if not meta or meta["settings"].get("seed") != s or meta["settings"].get("engine_version") != ENGINE_VERSION:
                         continue
                     y = ev.load_targets(ds, pid)
                     F = pd.read_csv(f)

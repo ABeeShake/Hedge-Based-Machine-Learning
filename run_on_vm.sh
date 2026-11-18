@@ -42,13 +42,12 @@ echo "== 0b 5-minute grid: gaps, segments, forecast coverage =="
 echo "== 1 post-processing all conditions =="
 "${PY}" run_postprocess_chunk.py --all 2>&1 | tee output_logs/postprocess.log
 
-echo "== 2 Fixed-Share comparison =="
-"${PY}" compare_fixed_share.py --overwrite --drop-mismatched 2>&1 | tee output_logs/fs_comparison.log
-
-echo "== 3 RMSE tables =="
+echo "== 2 RMSE tables =="
 "${PY}" generate_figures.py --rmse_only --median
 "${PY}" generate_figures.py --rmse_only
-"${PY}" compare_fixed_share.py --report-only --drop-mismatched
+
+echo "== 3 Aggregator and Fixed-Share comparison =="
+"${PY}" compare_fixed_share.py --overwrite --drop-mismatched 2>&1 | tee output_logs/fs_comparison.log
 
 echo "== 4 paired statistics =="
 "${PY}" calculate_statistics.py
@@ -68,11 +67,10 @@ if [ -f compute_regimes.py ] && [ -f analyze_regimes.py ] && [ -f plot_regime_an
     "${PY}" compute_regimes.py --cgmacros_dir ./cgmacros --weinstock_dir ./weinstock --out_dir ./Outputs/regimes
     for ds in weinstock cgmacros; do
         for h in 0.5 2 5; do
-            h_tag=$(echo "$h" | sed 's/0.5/half/')
             "${PY}" analyze_regimes.py --dataset "$ds" --data_dir "./$ds" --regimes_dir "./Outputs/regimes/$ds" \
-                --forecast_root "./Outputs/$ds" --horizon "$h" --context full --out_dir ./Outputs/regime_analysis || true
+                --forecast_root "./Outputs/$ds" --horizon "$h" --context full --out_dir ./Outputs/regime_analysis
             "${PY}" plot_regime_analysis.py --results_dir ./Outputs/regime_analysis --tag "${ds}_h${h}_cfull" \
-                --out_dir ./overleaf/images/regimes || true
+                --out_dir ./overleaf/images/regimes
             # Keep hhalf alias updated for LaTeX figures
             if [ "$h" = "0.5" ] && [ -f "./overleaf/images/regimes/fig3_stacked_freq_${ds}_h0.5_cfull.pdf" ]; then
                 cp "./overleaf/images/regimes/fig3_stacked_freq_${ds}_h0.5_cfull.pdf" \
@@ -82,8 +80,19 @@ if [ -f compute_regimes.py ] && [ -f analyze_regimes.py ] && [ -f plot_regime_an
     done
 fi
 
-echo "== 7 timings and secondary analyses =="
+echo "== 7 timings, secondary analyses, and runtime environment =="
 "${PY}" summarize_engine_timings.py
+"${PY}" -c '
+import csv, platform, importlib
+rows = [("python", platform.python_version())]
+for pkg in ("numpy", "scipy", "pandas", "torch", "xgboost", "statsforecast", "neuralforecast", "torchdyn"):
+    try:
+        rows.append((pkg, getattr(importlib.import_module(pkg), "__version__", "unknown")))
+    except Exception:
+        pass
+with open("overleaf/tables/runtime_env.csv", "w", newline="") as f:
+    w = csv.writer(f); w.writerow(["package", "version"]); w.writerows(rows)
+'
 [ -d Outputs/secondary/population ] && "${PY}" secondary_population_models.py --stage evaluate || echo "(no population-model outputs yet)"
 [ -d Outputs/secondary/cadence ] && "${PY}" secondary_retrain_cadence.py --stage evaluate || echo "(no refit-cadence outputs yet)"
 [ -d Outputs/secondary/seeds ] && "${PY}" secondary_seed_stability.py --stage evaluate || echo "(no seed-stability outputs yet)"

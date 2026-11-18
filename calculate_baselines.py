@@ -134,9 +134,13 @@ def _one_participant(task):
     obs = np.isfinite(y)
     pers = np.full(n, np.nan)
     pers[steps:] = y[:-steps]                # origins of scored rows always hold a real reading
-    clim = np.full(n, np.nan)
-    run_mean = np.cumsum(np.where(obs, y, 0.0)) / np.maximum(np.cumsum(obs), 1)
-    clim[steps:] = run_mean[:-steps]         # mean of the real readings up to the origin
+    if "RunningMean" in cols:
+        # Use the exact RunningMean expert trajectory so baseline and expert share one code path.
+        clim = f_mat[:, cols.index("RunningMean")]
+    else:
+        clim = np.full(n, np.nan)
+        run_mean = np.cumsum(np.where(obs, y, 0.0)) / np.maximum(np.cumsum(obs), 1)
+        clim[steps:] = run_mean[:-steps]
     with np.errstate(invalid="ignore"):
         rec = dict(dataset=ds, horizon=h, context=ctx, id=pid, hbml=_rmse(hb, mask),
                    persistence=_rmse((pers - y) ** 2, mask), climatology=_rmse((clim - y) ** 2, mask),
@@ -216,8 +220,8 @@ def evaluate_baselines(allow_mismatch=False):
 
 def generate_latex_table(df, output_tex):
     cols = ["persistence_rmse", "climatology_rmse", "uniform_rmse", "best_expert_rmse", "hbml_rmse"]
-    lines = [r"\begin{table*}[t]", r"\centering", r"\small", r"\begin{tabular}{lllcccccc}", r"\toprule",
-             r"Dataset & Horizon & Context & Persistence & Running mean & Uniform ensemble & Best expert & HBML & HBML vs.\ persistence (\%) \\",
+    lines = [r"\begin{table*}[t]", r"\centering", r"\scriptsize", r"\begin{tabular}{lllc ccccc c}", r"\toprule",
+             r"Dataset & Horizon & Context & $N$ & Persistence & Running mean & Uniform ensemble & Best expert & HBML & HBML vs.\ persistence (\%) \\",
              r"\midrule"]
     cur = None
     for _, r in df.iterrows():
@@ -225,6 +229,7 @@ def generate_latex_table(df, output_tex):
         if cur is not None and cur != ds:
             lines.append(r"\midrule")
         cur = ds
+        n_str = str(int(r["n"])) if pd.notna(r.get("n")) and int(r["n"]) > 0 else "---"
         vals = [r.get(c, np.nan) for c in cols]
         if all(pd.isna(v) for v in vals):
             cells = ["---"] * 5 + ["---"]
@@ -233,12 +238,12 @@ def generate_latex_table(df, output_tex):
             cells = [("---" if pd.isna(v) else (f"\\textbf{{{v:.2f}}}" if abs(v - lo) < 5e-3 else f"{v:.2f}")) for v in vals]
             red = r.get("hbml_reduction_vs_persistence_pct", np.nan)
             cells.append("---" if pd.isna(red) else f"{red:+.1f}")
-        lines.append(f"{ds} & {HORIZON_LABEL[r['horizon']]} & {'Full' if r['context'] == 'full' else r['context'] + ' hr'} & "
+        lines.append(f"{ds} & {HORIZON_LABEL[r['horizon']]} & {'Full' if r['context'] == 'full' else r['context'] + ' hr'} & {n_str} & "
                      + " & ".join(cells) + r" \\")
     lines += [r"\bottomrule", r"\end{tabular}",
-              r"\caption{\textbf{HBML compared with naive baselines.} Mean participant-level RMSE (mg/dL) for naive "
-              r"persistence ($\hat{y}_{t+h} = y_t$), the running participant mean ($\hat{y}_{t+h} = \bar{y}_{0:t}$), an "
-              r"equally weighted average of the five experts, the best constituent expert (lowest cohort mean RMSE), and "
+              r"\caption{\textbf{HBML compared with naive and uniform-ensemble baselines.} Mean participant-level RMSE (mg/dL) across the $N$ retained participants ($\ge 288$ scored targets) for naive "
+              r"persistence ($\hat{y}_{t+h} = y_t$), the expanding-window running participant mean ($\hat{y}_{t+h} = \bar{y}_{\mathcal{V}_t}$), an "
+              r"equally weighted average of the seven constituent experts, the best constituent expert (lowest cohort mean RMSE), and "
               r"HBML. All methods are scored on the same participants and time points. Bold marks the lowest value in "
               r"each row. The last column is the relative RMSE change of HBML against persistence (positive: HBML lower). "
               r"Dashes mark configurations that could not be evaluated.}",

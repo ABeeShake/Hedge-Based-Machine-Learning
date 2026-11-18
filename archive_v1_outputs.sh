@@ -6,22 +6,22 @@
 # never mix with v1 files. Raw data (cgmacros/, weinstock/, Outputs/<dataset>/data*) is untouched.
 set -euo pipefail
 cd "$(dirname "$0")"
+ARCHIVE_BASE="Outputs_v1"
+if [ -e "$ARCHIVE_BASE" ]; then
+    ARCHIVE_BASE="Outputs_archive/$(date +%Y%m%d_%H%M%S)"
+fi
 for ds in weinstock cgmacros; do
     [ -d "Outputs/$ds" ] || continue
-    mkdir -p "Outputs_v1/$ds"
+    mkdir -p "$ARCHIVE_BASE/$ds"
     for d in Outputs/$ds/h-*; do
         [ -e "$d" ] || continue
-        if [ -e "Outputs_v1/$ds/$(basename "$d")" ]; then
-            echo "Outputs_v1/$ds/$(basename "$d") already exists; not overwriting. Remove or rename it first." >&2
-            exit 1
-        fi
-        mv "$d" "Outputs_v1/$ds/"
+        mv "$d" "$ARCHIVE_BASE/$ds/"
     done
     for f in rmse.csv maxae.csv; do
-        [ -f "Outputs/$ds/$f" ] && mv "Outputs/$ds/$f" "Outputs_v1/$ds/$f"
+        [ -f "Outputs/$ds/$f" ] && mv "Outputs/$ds/$f" "$ARCHIVE_BASE/$ds/$f"
     done
 done
 for f in rmse.csv maxae.csv full_ceg.csv; do
-    [ -f "$f" ] && mv "$f" "Outputs_v1/$f"
+    [ -f "$f" ] && mkdir -p "$ARCHIVE_BASE" && mv "$f" "$ARCHIVE_BASE/$f"
 done
-echo "Engine-v1 outputs moved to Outputs_v1/."
+echo "Prior engine outputs moved to $ARCHIVE_BASE/."

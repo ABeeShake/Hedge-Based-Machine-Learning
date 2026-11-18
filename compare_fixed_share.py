@@ -64,7 +64,19 @@ VARIANTS = {
     "alg1_fs_c0.01": dict(update="recursive", scale="decay_max", gamma=0.2, alpha=0.01),
     "alg1_fs_c0.05": dict(update="recursive", scale="decay_max", gamma=0.2, alpha=0.05),
 }
+PRIMARY_VARIANT = "sfh_sqrt" if GlobalValues.primary_hbml == "HBML-SFH-Sqrt" else "current"
 FS_VARIANTS = [v for v in VARIANTS if "_fs_" in v]
+
+
+def _retained_ids(root, dataset, hkey, ctx):
+    """Participant IDs retained in overleaf/tables/rmse_participant.csv (None = no filter file)."""
+    p = os.path.join(root, "overleaf", "tables", "rmse_participant.csv")
+    if not os.path.exists(p):
+        return None
+    df = pd.read_csv(p, dtype={"id": str, "context": str, "horizon": str})
+    hz = "0.5" if hkey == "half" else hkey
+    sel = df[(df["dataset"] == dataset) & (df["horizon"] == hz) & (df["context"] == ctx)]
+    return set(sel["id"].str.zfill(3)) if len(sel) else None
 
 
 def find_targets(root, dataset, pid):
@@ -121,6 +133,9 @@ def run_condition(root, dataset, hkey, ctx, min_mtime, workers=1):
     fc_dir = os.path.join(root, "Outputs", dataset, f"h-{hkey}hr", f"context-{ctx}hr", "forecasts")
     files = sorted(f for f in glob.glob(os.path.join(fc_dir, "*_forecasts.csv"))
                    if os.path.basename(f)[3:] == "_forecasts.csv")
+    keep = _retained_ids(root, dataset, hkey, ctx)
+    if keep is not None:
+        files = [f for f in files if os.path.basename(f)[:3] in keep]
     fresh = [f for f in files if min_mtime == 0.0 or _current_engine(f)]
     info = dict(n_files=len(files), n_fresh=len(fresh))
     if not files or len(fresh) < 0.5 * len(files):
@@ -169,24 +184,24 @@ def build_report(out_dir, drop_mismatched=False):
     rows = []
     for (ds, h, c), g in wide.groupby(["dataset", "horizon", "context"]):
         best_exp = min(experts, key=lambda e: g[e].mean())
-        base = g["current"]
+        base_col = PRIMARY_VARIANT if PRIMARY_VARIANT in g.columns else "current"
+        base = g[base_col]
         for v in list(VARIANTS) + ["uniform"]:
-            d = base - g[v]  # positive = variant better than current
+            d = base - g[v]  # positive = variant better than primary
             rows.append(dict(
-                dataset=ds, horizon=h, context=c, n=len(g), variant=v,
+                dataset=ds, horizon=h, context=c, n=len(g), variant=v, primary_variant=base_col,
                 mean_rmse=g[v].mean(), median_rmse=g[v].median(),
                 best_expert=best_exp, best_expert_mean_rmse=g[best_exp].mean(),
                 delta_vs_current=d.mean(), pct_change_vs_current=100 * (g[v].mean() - base.mean()) / base.mean(),
                 pct_participants_better_than_current=100 * float((d > 1e-9).mean()),
-                wilcoxon_p_vs_current=wilcoxon_p(d.to_numpy()) if v != "current" else float("nan"),
+                wilcoxon_p_vs_current=wilcoxon_p(d.to_numpy()) if v != base_col else float("nan"),
                 delta_vs_best_expert=(g[best_exp] - g[v]).mean(),
                 pct_participants_better_than_best_expert=100 * float((g[best_exp] - g[v] > 1e-9).mean()),
             ))
     summ = pd.DataFrame(rows)
 
-    # Consistency check against the manuscript tables: if the 'current' aggregator does not
-    # reproduce the HBML mean in overleaf/tables/rmse_pivot_mean.csv, the forecasts in this
-    # folder are not the ones behind the tables (e.g. a partial sync from the VM).
+    # Consistency check against the manuscript tables: verify the primary variant reproduces
+    # the HBML mean in overleaf/tables/rmse_pivot_mean.csv.
     summ["matches_tables"] = "unknown"
     pivot_path = os.path.join(os.path.dirname(out_dir.rstrip(os.sep)), "overleaf", "tables", "rmse_pivot_mean.csv")
     if os.path.exists(pivot_path):
@@ -201,7 +216,7 @@ def build_report(out_dir, drop_mismatched=False):
                     ref[(r["dataset"], hmap.get(r["horizon"], r["horizon"]), c)] = float(val)
                 except ValueError:
                     pass
-        cur = summ[summ["variant"] == "current"].set_index(["dataset", "horizon", "context"])["mean_rmse"]
+        cur = summ[summ["variant"] == PRIMARY_VARIANT].set_index(["dataset", "horizon", "context"])["mean_rmse"]
         def _match(r):
             k = (r["dataset"], r["horizon"], r["context"])
             if k not in ref or k not in cur.index:
@@ -222,14 +237,15 @@ def build_report(out_dir, drop_mismatched=False):
                             key=lambda s: s.map({**order_h, **order_c}).fillna(0) if s.name != "dataset" else s)
     summ.to_csv(os.path.join(out_dir, "summary.csv"), index=False)
 
-    # Held-out choice: ratio to current, per participant-condition.
+    # Held-out choice: ratio to primary, per participant-condition.
     ratio = wide.copy()
+    base_col = PRIMARY_VARIANT if PRIMARY_VARIANT in wide.columns else "current"
     for v in VARIANTS:
-        ratio[v] = wide[v] / wide["current"]
+        ratio[v] = wide[v] / wide[base_col]
     ratio["half"] = np.where(ratio["id"].astype(int) % 2 == 0, "even", "odd")
-    lines = ["# Fixed-Share comparison", "",
-             "RMSE is per participant, mg/dL. Ratios are variant RMSE / current HBML-SFHDF RMSE "
-             "(below 1 = better than the current algorithm).", ""]
+    lines = ["# Aggregator & Fixed-Share comparison", "",
+             f"RMSE is per participant, mg/dL. Ratios are variant RMSE / primary {GlobalValues.primary_hbml} RMSE "
+             "(below 1 = better than the primary algorithm).", ""]
     if mismatched:
         lines += ["**Left out of this report** because the forecasts in this folder do not reproduce the HBML "
                   "means in `overleaf/tables/rmse_pivot_mean.csv` (stale or partial copy; run these where the "

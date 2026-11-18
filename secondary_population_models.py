@@ -154,6 +154,12 @@ def stage_train(a):
 
 def stage_evaluate(a):
     import json
+    ret_path = os.path.join(TABLES, "rmse_participant.csv")
+    retained = {}
+    if os.path.exists(ret_path):
+        rdf = pd.read_csv(ret_path, dtype={"id": str, "context": str, "horizon": str})
+        for (rds, rhz, rctx), rg in rdf.groupby(["dataset", "horizon", "context"]):
+            retained[(rds, "half" if rhz in ("0.5", "half") else rhz, rctx)] = set(rg["id"].str.zfill(3))
     recs, rows = [], []
     for scheme in ("within", "cross"):
         for ds in ("weinstock", "cgmacros"):
@@ -163,8 +169,11 @@ def stage_evaluate(a):
                     continue
                 h = ev.HORIZON_STEPS[hk]
                 pers_dir = os.path.join(BASE, "Outputs", ds, f"h-{hk}hr", f"context-{a.context}hr")
+                keep = retained.get((ds, hk, str(a.context)))
                 for pf in ev.forecast_files(pop_dir, "_popforecasts.csv"):
                     pid = os.path.basename(pf)[:3]
+                    if keep is not None and pid not in keep:
+                        continue
                     ff = os.path.join(pers_dir, "forecasts", f"{pid}_forecasts.csv")
                     meta = ev.read_meta(ff) if os.path.exists(ff) else None
                     if not meta or meta["settings"].get("engine_version") != ENGINE_VERSION:
