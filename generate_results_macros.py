@@ -49,7 +49,7 @@ CONTEXTS = [("6", "SixHr"), ("12", "TwelveHr"), ("24", "TwentyFourHr"), ("full",
 CTX_NAME = dict(CONTEXTS)
 CTX_TEXT = {"6": "6-hour", "12": "12-hour", "24": "24-hour", "full": "full-history"}
 STATUS_NAME = {"non-T2D": "NoDiabetes", "pre-T2D": "Prediabetes", "T2D": "TypeTwo"}
-MACRO_PREFIXES = ("RMSE", "CEG", "Wilcoxon", "Ttest", "PctImproved", "PctWorse", "NImproved", "NWorse", "NTotal",
+MACRO_PREFIXES = ("RMSE", "AbsRMSE", "Oracle", "CEG", "Wilcoxon", "Ttest", "PctImproved", "PctWorse", "NImproved", "NWorse", "NTotal",
                   "PairedDiff", "BestExpert", "StatAll", "StatWeinstock", "StatCgmacros", "StatCGMacros",
                   "Baseline", "Vol[A-Z]", "Timing", "NWeinstock", "NCgmacros", "NCGMacros", "NConfigs", "NTotalParticipants",
                   "NParticipantConfigs", "NSecondarySubset", "NMinScored", "NExcluded", "Ablation", "GammaSens", "NExpertsWinning",
@@ -551,8 +551,11 @@ def generate_macros(strict=False, quiet=False):
             M.num(f"RMSEWorstExpertMean{key}", wo_m)
             M.num(f"RMSEWorstExpertSd{key}", wo_sd)
             M.num(f"RMSEOracleDiff{key}", hb_m - or_m)
+            M.num(f"AbsRMSEOracleDiff{key}", abs(hb_m - or_m))
+            M.add(f"OracleCmpVerb{key}", "outperformed" if hb_m < or_m - 0.005 else ("matched" if abs(hb_m - or_m) <= 0.005 else "trailed"))
             rel_d = (hb_m - or_m) / or_m * 100.0
             M.num(f"RMSEOracleRelDiff{key}", rel_d, 1)
+            M.num(f"AbsRMSEOracleRelDiff{key}", abs(rel_d), 1)
             if hz_k == "ThirtyMin":
                 rel_diff_30m.append(rel_d)
             winners = Counter(min(exps_list, key=lambda e: m[e]) for m in valid_p)
@@ -573,6 +576,9 @@ def generate_macros(strict=False, quiet=False):
         if rel_diff_30m:
             M.num("RMSEOracleRelDiffThirtyMinMin", min(rel_diff_30m), 1)
             M.num("RMSEOracleRelDiffThirtyMinMax", max(rel_diff_30m), 1)
+            abs_rel_30m = [abs(x) for x in rel_diff_30m]
+            M.num("AbsRMSEOracleRelDiffThirtyMinMin", min(abs_rel_30m), 1)
+            M.num("AbsRMSEOracleRelDiffThirtyMinMax", max(abs_rel_30m), 1)
 
     # 10. Aggregator and Fixed-Share ablation + gamma sensitivity
     M.section("Aggregator and Fixed-Share ablation")
@@ -709,6 +715,7 @@ def generate_macros(strict=False, quiet=False):
     rows = need("hbml_ceg_comparison.csv")
     if rows:
         ceg_vmap = {
+            "HBML-SFH-Sqrt": "SFHSqrt",
             "HBML-SFHDF": "SFHDF",
             "HBML-SFH": "SFH",
             "HBML-SFH-SD": "SFHSD",
