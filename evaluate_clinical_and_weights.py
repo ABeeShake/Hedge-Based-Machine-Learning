@@ -233,8 +233,10 @@ def run_participant(dataset, pid, fc_path, h_steps):
 
 
 def evaluate_hypo_trajectory(y, pred, scored_mask, h, diabetes_type=1,
-                             thresh=70.0, min_ep_slots=3, min_gap_slots=6):
-    """Pre-onset episode hypoglycaemia detection (<70 mg/dL), point metrics, and Parkes Grid."""
+                             thresh=70.0, true_thresh=70.0, min_ep_slots=3, min_gap_slots=6,
+                             n_chance_shifts=200, compute_parkes=True):
+    """Pre-onset episode hypoglycaemia detection (true <true_thresh, alarm pred <thresh),
+    circular time-shifted chance baseline, point metrics, and Parkes Grid."""
     idx = np.flatnonzero(scored_mask)
     if len(idx) == 0:
         return None
@@ -245,13 +247,14 @@ def evaluate_hypo_trajectory(y, pred, scored_mask, h, diabetes_type=1,
     parkes_a = parkes_ab = 0
     for t in idx:
         yt, pt = float(y[t]), float(pred[t])
-        z = parkes_error_grid_zone(yt, pt, diabetes_type=diabetes_type)
-        if z == "A":
-            parkes_a += 1
-            parkes_ab += 1
-        elif z == "B":
-            parkes_ab += 1
-        is_hypo_true = yt < thresh
+        if compute_parkes:
+            z = parkes_error_grid_zone(yt, pt, diabetes_type=diabetes_type)
+            if z == "A":
+                parkes_a += 1
+                parkes_ab += 1
+            elif z == "B":
+                parkes_ab += 1
+        is_hypo_true = yt < true_thresh
         is_hypo_pred = pt < thresh
         if is_hypo_true and is_hypo_pred:
             tp += 1
@@ -266,7 +269,7 @@ def evaluate_hypo_trajectory(y, pred, scored_mask, h, diabetes_type=1,
     raw_runs = []
     cur_start = cur_end = None
     for t in idx:
-        if y[t] < thresh:
+        if y[t] < true_thresh:
             if cur_start is None:
                 cur_start = cur_end = int(t)
             elif int(t) - cur_end <= 2:
@@ -285,19 +288,26 @@ def evaluate_hypo_trajectory(y, pred, scored_mask, h, diabetes_type=1,
             merged.append([st, en])
     episodes = [(st, en) for st, en in merged if (en - st + 1) >= min_ep_slots]
 
+    idx_pos = {int(slot): pos for pos, slot in enumerate(idx)}
     detected_pre = 0
     detected_any = 0
     lead_times_det_min = []
     lead_times_all_min = []
+    ep_pre_positions = []
     for st, en in episodes:
         # Strict pre-onset alert: forecast targeting slot t in [st, en] was issued at t - h < st
         first_pre = None
         any_hit = False
+        pre_pos = []
         for t in range(st, en + 1):
-            if scored_mask[t] and pred[t] < thresh:
-                any_hit = True
-                if (t - h) < st and first_pre is None:
-                    first_pre = t
+            if scored_mask[t]:
+                if (t - h) < st and t in idx_pos:
+                    pre_pos.append(idx_pos[t])
+                if pred[t] < thresh:
+                    any_hit = True
+                    if (t - h) < st and first_pre is None:
+                        first_pre = t
+        ep_pre_positions.append(pre_pos)
         if any_hit:
             detected_any += 1
         if first_pre is not None:
@@ -308,7 +318,26 @@ def evaluate_hypo_trajectory(y, pred, scored_mask, h, diabetes_type=1,
         else:
             lead_times_all_min.append(0.0)
 
-    # False alert clusters: contiguous runs of pred < thresh with no true y < thresh within +/- 2 slots
+    # Time-shifted chance baseline: circularly shift the participant's alert sequence
+    # outside a +/- (h + 12)-slot exclusion window around zero lag.
+    chance_detected_sum = 0.0
+    if episodes and n_chance_shifts > 0 and n_scored > 1:
+        alert_vec = (pred[idx] < thresh)
+        min_sep = h + 12
+        lo = min_sep if n_scored > 2 * min_sep + 5 else 1
+        hi = n_scored - min_sep if n_scored > 2 * min_sep + 5 else n_scored - 1
+        if hi >= lo:
+            shifts = np.unique(np.linspace(lo, hi, min(n_chance_shifts, hi - lo + 1), dtype=int))
+        else:
+            shifts = np.array([1], dtype=int)
+        for pre_pos in ep_pre_positions:
+            if not pre_pos:
+                continue
+            p_arr = np.asarray(pre_pos, dtype=int)[:, None]
+            hits = alert_vec[(p_arr - shifts[None, :]) % n_scored].any(axis=0)
+            chance_detected_sum += float(np.mean(hits))
+
+    # False alert clusters: contiguous runs of pred < thresh with no true y < true_thresh within +/- 2 slots
     pred_runs = []
     p_start = p_end = None
     for t in idx:
@@ -328,7 +357,7 @@ def evaluate_hypo_trajectory(y, pred, scored_mask, h, diabetes_type=1,
     for st, en in pred_runs:
         w_lo = max(0, st - 2)
         w_hi = min(n_tot - 1, en + 2)
-        if not any(scored_mask[tau] and y[tau] < thresh for tau in range(w_lo, w_hi + 1)):
+        if not any(scored_mask[tau] and y[tau] < true_thresh for tau in range(w_lo, w_hi + 1)):
             false_clusters += 1
 
     return {
@@ -341,11 +370,12 @@ def evaluate_hypo_trajectory(y, pred, scored_mask, h, diabetes_type=1,
         "n_episodes": len(episodes),
         "n_detected": detected_pre,
         "n_detected_any": detected_any,
+        "chance_detected_sum": chance_detected_sum,
         "lead_times_det": lead_times_det_min,
         "lead_times_all": lead_times_all_min,
         "false_clusters": false_clusters,
-        "parkes_a_pct": 100.0 * parkes_a / n_scored,
-        "parkes_ab_pct": 100.0 * parkes_ab / n_scored,
+        "parkes_a_pct": (100.0 * parkes_a / n_scored) if compute_parkes else float("nan"),
+        "parkes_ab_pct": (100.0 * parkes_ab / n_scored) if compute_parkes else float("nan"),
     }
 
 
@@ -395,14 +425,69 @@ def classify_regimes_stdlib(dataset, pid, y):
     return regimes
 
 
+SWEEP_THRESHOLDS = [70.0, 72.0, 74.0, 76.0, 78.0, 80.0, 82.0, 85.0, 88.0, 90.0]
+
+
+def _plot_threshold_sweep(sweep_rows, out_pdf):
+    """Plot pre-onset sensitivity and above-chance gain vs false alerts/day across thresholds 70--90 mg/dL."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception as exc:
+        print(f"Skipping sweep plot ({exc})")
+        return
+    os.makedirs(os.path.dirname(out_pdf), exist_ok=True)
+    styles = {
+        "HBML": dict(color="#d62728", marker="o", lw=2.2, label="HBML (SFH-Sqrt)"),
+        "BestExpert": dict(color="#2ca02c", marker="s", lw=2.0, ls="--", label="Best single expert (ARIMA)"),
+        "Persistence": dict(color="#7f7f7f", marker="^", lw=1.8, ls=":", label="Persistence"),
+    }
+    fig, axes = plt.subplots(1, 2, figsize=(10.5, 4.2))
+    for model_key, st in styles.items():
+        sub = [r for r in sweep_rows if r["model"] == model_key]
+        if not sub:
+            continue
+        sub.sort(key=lambda r: float(r["threshold_mgdl"]))
+        x = [float(r["false_alerts_per_day"]) for r in sub]
+        y_sens = [float(r["episode_sensitivity_pct"]) for r in sub]
+        y_above = [float(r["above_chance_pp"]) for r in sub]
+        axes[0].plot(x, y_sens, color=st["color"], marker=st["marker"], lw=st["lw"], ls=st.get("ls", "-"),
+                     markersize=5, label=st["label"])
+        axes[1].plot(x, y_above, color=st["color"], marker=st["marker"], lw=st["lw"], ls=st.get("ls", "-"),
+                     markersize=5, label=st["label"])
+        # Annotate nominal 70 mg/dL and 90 mg/dL endpoints
+        axes[0].annotate(f"{int(sub[0]['threshold_mgdl'])}", (x[0], y_sens[0]),
+                         textcoords="offset points", xytext=(4, -10), fontsize=8, color=st["color"])
+        axes[0].annotate(f"{int(sub[-1]['threshold_mgdl'])}", (x[-1], y_sens[-1]),
+                         textcoords="offset points", xytext=(4, 2), fontsize=8, color=st["color"])
+    axes[0].set_xlabel("False alerts per participant-day")
+    axes[0].set_ylabel("Pre-onset episode sensitivity (%)")
+    axes[0].set_title("(a) Sensitivity vs. false-alert operating curve")
+    axes[0].grid(True, alpha=0.25)
+    axes[0].legend(frameon=False, fontsize=8.5)
+    axes[1].axhline(0.0, color="black", lw=0.8, ls="--")
+    axes[1].set_xlabel("False alerts per participant-day")
+    axes[1].set_ylabel("Sensitivity above time-shifted chance (pp)")
+    axes[1].set_title("(b) Pre-onset gain over chance baseline")
+    axes[1].grid(True, alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(out_pdf, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved {out_pdf}")
+
+
 def main():
     os.makedirs(TABLES_DIR, exist_ok=True)
-    only_full = "--full-only" in sys.argv
+    hypo_only = "--hypo-only" in sys.argv
+    only_full = ("--full-only" in sys.argv) or hypo_only
+    no_plots = "--no-plots" in sys.argv
     retained_ids = load_retained_ids()
     refs = load_reference_means_and_counts(retained_ids)
 
     weight_rows = []
     hypo_rows = []
+    sweep_rows = []
     regime_rows = []
 
     for ds in ("weinstock", "cgmacros"):
@@ -467,12 +552,14 @@ def main():
 
                 if ctx == "full" and matches:
                     best_k = cols.index(best_exp)
-                    for m_label, get_pred in (
+                    model_specs = (
                         ("HBML", lambda r: r["pred_primary"]),
                         (f"BestExpert ({best_exp})", lambda r, bk=best_k: r["F"][:, bk]),
                         ("Persistence", lambda r, hs=h_steps: np.r_[np.zeros(hs), r["y"][:-hs]]),
-                    ):
+                    )
+                    for m_label, get_pred in model_specs:
                         ep_tot = det_tot = det_any_tot = tp_tot = fp_tot = fn_tot = 0
+                        chance_tot = 0.0
                         days_tot = 0.0
                         fc_tot = 0
                         leads_det = []
@@ -487,6 +574,7 @@ def main():
                             ep_tot += ev_r["n_episodes"]
                             det_tot += ev_r["n_detected"]
                             det_any_tot += ev_r["n_detected_any"]
+                            chance_tot += ev_r["chance_detected_sum"]
                             tp_tot += ev_r["tp"]
                             fp_tot += ev_r["fp"]
                             fn_tot += ev_r["fn"]
@@ -497,6 +585,8 @@ def main():
                             pa_list.append(ev_r["parkes_a_pct"])
                             pab_list.append(ev_r["parkes_ab_pct"])
                         ep_sens = 100.0 * det_tot / ep_tot if ep_tot > 0 else float("nan")
+                        chance_sens = 100.0 * chance_tot / ep_tot if ep_tot > 0 else float("nan")
+                        above_chance = (ep_sens - chance_sens) if (ep_tot > 0) else float("nan")
                         ep_sens_any = 100.0 * det_any_tot / ep_tot if ep_tot > 0 else float("nan")
                         pt_sens = 100.0 * tp_tot / (tp_tot + fn_tot) if (tp_tot + fn_tot) > 0 else float("nan")
                         pt_ppv = 100.0 * tp_tot / (tp_tot + fp_tot) if (tp_tot + fp_tot) > 0 else float("nan")
@@ -515,6 +605,8 @@ def main():
                             "n_detected": det_tot,
                             "episode_sensitivity_pct": ep_sens,
                             "episode_sensitivity_any_pct": ep_sens_any,
+                            "chance_sensitivity_pct": chance_sens,
+                            "above_chance_pp": above_chance,
                             "mean_lead_time_min": lead_all_mean,
                             "mean_lead_time_detected_min": lead_det_mean,
                             "point_sensitivity_pct": pt_sens,
@@ -525,7 +617,51 @@ def main():
                             "parkes_ab_pct": sum(pab_list) / len(pab_list),
                         })
 
-                if ctx == "full" and h_str == "half" and matches:
+                    if ds == "weinstock" and h_str == "half":
+                        for thr in SWEEP_THRESHOLDS:
+                            for m_label, get_pred in model_specs:
+                                ep_tot = det_tot = tp_tot = fp_tot = fn_tot = 0
+                                chance_tot = days_tot = 0.0
+                                fc_tot = 0
+                                for r in p_res:
+                                    ev_r = evaluate_hypo_trajectory(
+                                        r["y"], get_pred(r), r["scored_mask"], h_steps,
+                                        thresh=thr, true_thresh=70.0, compute_parkes=False,
+                                    )
+                                    if not ev_r:
+                                        continue
+                                    ep_tot += ev_r["n_episodes"]
+                                    det_tot += ev_r["n_detected"]
+                                    chance_tot += ev_r["chance_detected_sum"]
+                                    tp_tot += ev_r["tp"]
+                                    fp_tot += ev_r["fp"]
+                                    fn_tot += ev_r["fn"]
+                                    days_tot += ev_r["days"]
+                                    fc_tot += ev_r["false_clusters"]
+                                ep_sens = 100.0 * det_tot / ep_tot if ep_tot > 0 else float("nan")
+                                ch_sens = 100.0 * chance_tot / ep_tot if ep_tot > 0 else float("nan")
+                                pt_sens = 100.0 * tp_tot / (tp_tot + fn_tot) if (tp_tot + fn_tot) > 0 else float("nan")
+                                pt_ppv = 100.0 * tp_tot / (tp_tot + fp_tot) if (tp_tot + fp_tot) > 0 else float("nan")
+                                pt_f1 = (2 * pt_sens * pt_ppv / (pt_sens + pt_ppv)) if (pt_sens + pt_ppv) > 0 else float("nan")
+                                sweep_rows.append({
+                                    "dataset": ds,
+                                    "horizon": h_disp,
+                                    "context": ctx,
+                                    "threshold_mgdl": thr,
+                                    "model": m_label.split(" ")[0],
+                                    "best_expert_name": best_exp,
+                                    "n_participants": n_p,
+                                    "n_episodes": ep_tot,
+                                    "n_detected": det_tot,
+                                    "episode_sensitivity_pct": ep_sens,
+                                    "chance_sensitivity_pct": ch_sens,
+                                    "above_chance_pp": ep_sens - ch_sens,
+                                    "false_alerts_per_day": fc_tot / max(days_tot, 1e-6),
+                                    "point_ppv_pct": pt_ppv,
+                                    "point_f1_pct": pt_f1,
+                                })
+
+                if ctx == "full" and h_str == "half" and matches and not hypo_only:
                     reg_order = ["STABLE", "RISING", "FALLING", "HIGHVAR", "RECOVERY", "HYPO_TRANS"]
                     reg_se_hbml = defaultdict(list)
                     reg_se_exp = {c: defaultdict(list) for c in cols}
@@ -606,8 +742,21 @@ def main():
             w = csv.DictWriter(f, fieldnames=list(hypo_rows[0].keys()))
             w.writeheader()
             w.writerows(hypo_rows)
-        write_hypo_tex(hypo_rows, os.path.join(TABLES_DIR, "table_hypoglycemia_events.tex"))
-        print(f"Wrote {h_path} and table_hypoglycemia_events.tex ({len(hypo_rows)} rows)")
+        main_rows = [r for r in hypo_rows if str(r["horizon"]) in ("0.5", "half")]
+        supp_rows = [r for r in hypo_rows if str(r["horizon"]) not in ("0.5", "half")]
+        write_hypo_tex(main_rows, os.path.join(TABLES_DIR, "table_hypoglycemia_events.tex"), supplement=False)
+        write_hypo_tex(supp_rows, os.path.join(TABLES_DIR, "table_hypoglycemia_events_supp.tex"), supplement=True)
+        print(f"Wrote {h_path}, table_hypoglycemia_events.tex ({len(main_rows)}), and table_hypoglycemia_events_supp.tex ({len(supp_rows)})")
+
+    if sweep_rows:
+        s_path = os.path.join(TABLES_DIR, "hypoglycemia_threshold_sweep.csv")
+        with open(s_path, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(sweep_rows[0].keys()))
+            w.writeheader()
+            w.writerows(sweep_rows)
+        print(f"Wrote {s_path} ({len(sweep_rows)} rows)")
+        if not no_plots:
+            _plot_threshold_sweep(sweep_rows, os.path.join(BASE_DIR, "overleaf", "images", "clinical", "fig_hypo_threshold_sweep.pdf"))
 
     if regime_rows:
         r_path = os.path.join(TABLES_DIR, "regime_summary_table.csv")
@@ -619,16 +768,19 @@ def main():
         print(f"Wrote {r_path} and table_regime_summary.tex ({len(regime_rows)} rows)")
 
 
-def write_hypo_tex(rows, out_path):
+def write_hypo_tex(rows, out_path, supplement=False):
     ds_disp = {"weinstock": "Weinstock 2016", "cgmacros": "CGMacros"}
+    has_chance = bool(rows) and ("chance_sensitivity_pct" in rows[0])
+    cols_spec = "lllccccccccccc" if has_chance else "lllccccccccc"
+    chance_hdr = " & Chance sens.\\ (\\%) & Above chance (pp)" if has_chance else ""
     lines = [
         r"\begin{table*}[t]",
         r"\centering",
         r"\scriptsize",
         r"\resizebox{\linewidth}{!}{%",
-        r"\begin{tabular}{lllccccccccc}",
+        f"\\begin{{tabular}}{{{cols_spec}}}",
         r"\toprule",
-        r"Dataset & Horizon & Model & $N$ & Episodes & Pre-onset sens.\ (\%) & Lead (all, min) & Lead (det., min) & Point PPV (\%) & Point $F_1$ (\%) & False alerts / day & Parkes A+B (\%) \\",
+        f"Dataset & Horizon & Model & $N$ & Episodes & Pre-onset sens.\\ (\\%){chance_hdr} & Lead (all, min) & Lead (det., min) & Point PPV (\\%) & Point $F_1$ (\\%) & False alerts / day & Parkes A+B (\\%) \\\\",
         r"\midrule",
     ]
     prev_ds = None
@@ -641,27 +793,43 @@ def write_hypo_tex(rows, out_path):
         if m == "BestExpert":
             m = f"Best expert ({r['best_expert_name']})"
         def _fmt1(v):
-            return "---" if (v is None or (isinstance(v, float) and math.isnan(v))) else f"{v:.1f}"
+            if v is None or str(v).strip() == "":
+                return "---"
+            fv = float(v)
+            return "---" if math.isnan(fv) else f"{fv:.1f}"
+
+        def _fmts1(v):
+            if v is None or str(v).strip() == "":
+                return "---"
+            fv = float(v)
+            return "---" if math.isnan(fv) else f"{fv:+.1f}"
+        ch_cells = f" & {_fmt1(r.get('chance_sensitivity_pct'))} & {_fmts1(r.get('above_chance_pp'))}" if has_chance else ""
         lines.append(
             f"{ds} & {r['horizon']} hr & {m} & {r['n_participants']} & {r['n_episodes']} & "
-            f"{_fmt1(r['episode_sensitivity_pct'])} & {_fmt1(r['mean_lead_time_min'])} & "
+            f"{_fmt1(r['episode_sensitivity_pct'])}{ch_cells} & {_fmt1(r['mean_lead_time_min'])} & "
             f"{_fmt1(r['mean_lead_time_detected_min'])} & "
             f"{_fmt1(r['point_ppv_pct'])} & {_fmt1(r['point_f1_pct'])} & "
-            f"{r['false_alerts_per_day']:.2f} & {_fmt1(r['parkes_ab_pct'])} \\\\"
+            f"{float(r['false_alerts_per_day']):.2f} & {_fmt1(r['parkes_ab_pct'])} \\\\"
         )
-    lines += [
-        r"\bottomrule",
-        r"\end{tabular}%",
-        r"}",
-        r"\caption{\textbf{Pre-onset hypoglycaemia ($<70$~mg/dL) episode detection and Parkes consensus error grid performance (full-history context).} "
-        r"True hypoglycaemic episodes are contiguous runs of $\ge 3$ scored readings ($15$~min) below $70$~mg/dL separated by $\ge 30$~min at or above $70$~mg/dL across the $N$ retained participants. "
-        r"Pre-onset episode sensitivity counts only episodes detected by at least one forecast issued strictly prior to episode onset ($t_{\text{issue}} = t - h < t_{\text{start}}$). "
-        r"``Lead (all, min)'' reports the unconditional mean warning time prior to episode onset across all episodes (counting missed episodes as $0$~min), whereas ``Lead (det., min)'' averages over detected episodes. "
-        r"Point PPV and $F_1$ evaluate timestep-level hypoglycaemia classification; false alerts per day count predicted $<70$~mg/dL alert clusters when reference glucose remained $\ge 70$~mg/dL throughout the $\pm 10$-min window; "
-        r"and Parkes A+B reports participant-averaged proportions in Zones A and B using the Parkes Type 2 grid for CGMacros participants with type 2 diabetes and the Type 1 grid otherwise.}",
-        r"\label{tab:hypoglycemia_events}",
-        r"\end{table*}",
-    ]
+    if supplement:
+        cap = (
+            r"\caption{\textbf{Descriptive 2-hour and 5-hour pre-onset hypoglycaemia ($<70$~mg/dL) detection metrics and Parkes consensus error grid performance (full-history context).} "
+            r"Descriptive long-horizon extension of Table~\ref{tab:hypoglycemia_events}. Notice that reactive persistence alerts targeting 2--5~hours ahead reflect recurrent low readings hours before a subsequent episode rather than active predictive anticipation. "
+            r"Metrics follow Table~\ref{tab:hypoglycemia_events}.}"
+        )
+        lbl = r"\label{tab:hypoglycemia_events_supp}"
+    else:
+        cap = (
+            r"\caption{\textbf{30-minute pre-onset hypoglycaemia ($<70$~mg/dL) episode detection and Parkes consensus error grid performance (full-history context).} "
+            r"True hypoglycaemic episodes are contiguous runs of $\ge 3$ scored readings ($15$~min) below $70$~mg/dL separated by $\ge 30$~min at or above $70$~mg/dL across the $N$ retained participants. "
+            r"Pre-onset episode sensitivity counts only episodes detected by at least one forecast issued strictly prior to episode onset ($t_{\text{issue}} = t - h < t_{\text{start}}$). "
+            + (r"``Chance sens.'' and ``Above chance'' report expected pre-onset sensitivity under circular time-shifted alerts within each participant and the net gain over chance in percentage points. " if has_chance else "")
+            + r"``Lead (all, min)'' reports the unconditional mean warning time prior to episode onset across all episodes (counting missed episodes as $0$~min), whereas ``Lead (det., min)'' averages over detected episodes. "
+            r"Point PPV and $F_1$ evaluate timestep-level hypoglycaemia classification; false alerts per day count predicted $<70$~mg/dL alert clusters when reference glucose remained $\ge 70$~mg/dL throughout the $\pm 10$-min window; "
+            r"and Parkes A+B reports participant-averaged proportions in Zones A and B using the Parkes Type 2 grid for CGMacros participants with type 2 diabetes and the Type 1 grid otherwise. (Descriptive 2- and 5-hour metrics appear in Supplementary Table~\ref{tab:hypoglycemia_events_supp}.)}"
+        )
+        lbl = r"\label{tab:hypoglycemia_events}"
+    lines += [r"\bottomrule", r"\end{tabular}%", r"}", cap, lbl, r"\end{table*}"]
     with open(out_path, "w") as f:
         f.write("\n".join(lines) + "\n")
 

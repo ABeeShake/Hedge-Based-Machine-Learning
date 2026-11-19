@@ -250,7 +250,7 @@ class NODEExpert(BaseExpert):
 
 
 class NHITSExpert(BaseExpert):
-    """N-HITS (NeuralForecast module) trained with AdamW regularization, gradient clipping, and
+    """N-HITS (NeuralForecast module) trained with Adam and L2 weight decay, gradient clipping, and
     early stopping on the chronologically held-out final 20% of observed windows up to slot t.
     Warm-started at each refit. Input length = context_len (120 steps for full history)."""
     name = "NHITS"

@@ -219,6 +219,23 @@ def test_full_pool_smoke():
     print("  fit seconds:", {k: round(v["fit_s_mean"], 2) for k, v in res["timings"].items()})
 
 
+def test_hypo_chance_and_threshold_sweep():
+    import evaluate_clinical_and_weights as ecw
+    n = 400
+    y = np.full(n, 140.0)
+    y[200:206] = 62.0   # 30-min clinical hypoglycaemic episode at slots 200..205
+    mask = np.ones(n, dtype=bool)
+    mask[:20] = False
+    # Forecast predicts 73 mg/dL strictly pre-onset (slot 200, issued 194 = 200 - 6 < 200)
+    pred = np.full(n, 140.0)
+    pred[200] = 73.0
+    r70 = ecw.evaluate_hypo_trajectory(y, pred, mask, h=6, thresh=70.0, true_thresh=70.0, n_chance_shifts=50)
+    r75 = ecw.evaluate_hypo_trajectory(y, pred, mask, h=6, thresh=75.0, true_thresh=70.0, n_chance_shifts=50)
+    assert r70["n_episodes"] == 1 and r70["n_detected"] == 0
+    assert r75["n_episodes"] == 1 and r75["n_detected"] == 1
+    assert r75["chance_detected_sum"] < 0.05
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

@@ -353,9 +353,11 @@ def generate_macros(strict=False, quiet=False):
                     "pct_improved_min": "PctImprovedMin", "pct_improved_max": "PctImprovedMax",
                     "n_participants_min": "NParticipantsMin", "n_participants_max": "NParticipantsMax",
                     "n_shapiro_reject": "NShapiroReject", "n_boot": "NBoot", "fdr_q": "FDRq",
-                    "n_equiv_wilcoxon": "NEquivWilcoxon", "n_configs_30min": "NConfigsThirtyMin",
+                    "n_equiv_wilcoxon": "NEquivWilcoxon", "n_equiv_ttest": "NEquivTtest",
+                    "n_equiv_rel5": "NEquivRelFive", "n_configs_30min": "NConfigsThirtyMin",
                     "n_equiv_wilcoxon_30min": "NEquivWilcoxonThirtyMin",
                     "n_equiv_ttest_30min": "NEquivTtestThirtyMin",
+                    "n_equiv_rel5_30min": "NEquivRelFiveThirtyMin",
                     "equiv_margin_mgdl": "EquivMarginMgdl"}
         scope_name = {"all": "All", "weinstock": "Weinstock", "cgmacros": "Cgmacros"}
         for r in rows:
@@ -816,6 +818,10 @@ def generate_macros(strict=False, quiet=False):
             M.add(f"HypoDetected{key}", r.get("n_detected", ""))
             M.num(f"HypoEpSens{key}", to_float(r.get("episode_sensitivity_pct", "")), 1)
             M.num(f"HypoEpSensAny{key}", to_float(r.get("episode_sensitivity_any_pct", r.get("episode_sensitivity_pct", ""))), 1)
+            if "chance_sensitivity_pct" in r:
+                M.num(f"HypoChanceSens{key}", to_float(r.get("chance_sensitivity_pct", "")), 1)
+            if "above_chance_pp" in r:
+                M.num(f"HypoAboveChance{key}", to_float(r.get("above_chance_pp", "")), 1)
             M.num(f"HypoLeadTime{key}", to_float(r.get("mean_lead_time_min", "")), 1)
             M.num(f"HypoLeadTimeDet{key}", to_float(r.get("mean_lead_time_detected_min", r.get("mean_lead_time_min", ""))), 1)
             M.num(f"HypoPointSens{key}", to_float(r.get("point_sensitivity_pct", "")), 1)
@@ -852,11 +858,12 @@ def generate_macros(strict=False, quiet=False):
             M.num(f"RegimeTopFreqPct{key}", to_float(r.get("top_freq_pct", "")), 1)
             M.num(f"RegimeHBMLFreqPct{key}", to_float(r.get("hbml_freq_pct", "")), 1)
             if hb_v is not None and be_v is not None and be_v > 0:
-                if hb_v < be_v - 0.005:
+                hb_r, be_r = round(hb_v, 2), round(be_v, 2)
+                if hb_r < be_r:
                     M.add(f"RegimeCmpVerb{key}", "outperformed")
                     M.add(f"RegimeCmpAdj{key}", "lower")
                     reg_out_cnt[ds_k] = reg_out_cnt.get(ds_k, 0) + 1
-                elif abs(hb_v - be_v) <= 0.005:
+                elif hb_r == be_r:
                     M.add(f"RegimeCmpVerb{key}", "matched")
                     M.add(f"RegimeCmpAdj{key}", "comparable")
                 else:

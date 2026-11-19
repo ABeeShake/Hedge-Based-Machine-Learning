@@ -33,7 +33,7 @@ NUM_PATS = [
     ("count of N", re.compile(r"\b\d+\s+(?:evaluable\s+)?(?:participants|individuals|older adults|adults|configurations)\b")),
 ]
 ALLOW = [
-    r"95\\%", r"70--180", r"40--400", r"40,\s*400", r"\b0\.05\b", r"\b0\.001\b", r"\b0\.01\b",
+    r"95\\%", r"70--180", r"40--400", r"40,\s*400", r"\b0\.05\b", r"\b0\.001\b", r"\b0\.01\b", r"\\pm\s*5\\%", r"\\approx\s*0\.14",
     r"\b0\.10?\b", r"\b0\.20?\b", r"\b0\.30?\b", r"\b0\.50?\b", r"\b0\.8\b", r"\b1\.0\b",
     r"\b1\.5\b", r"\b2\.5\b", r"\b50\.0\b", r"\b18\.0182\b", r"3\.08", r"20\\%", r"50\\%",
     r"\b(?:three|four|two) ", r"5--15", r"30 to 60", r"300-second", r"10--14",
@@ -94,7 +94,8 @@ def main():
     files = [(os.path.join(OVERLEAF, "main.tex"), True),
              (os.path.join(OVERLEAF, "sections", "introduction.tex"), False),
              (os.path.join(OVERLEAF, "sections", "results.tex"), False),
-             (os.path.join(OVERLEAF, "sections", "discussion.tex"), False)]
+             (os.path.join(OVERLEAF, "sections", "discussion.tex"), False),
+             (os.path.join(OVERLEAF, "sections", "supplement.tex"), False)]
     methods = (os.path.join(OVERLEAF, "sections", "methods.tex"), False)
     used = {}
     for path, abs_only in files + [methods]:

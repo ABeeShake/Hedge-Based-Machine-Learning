@@ -290,10 +290,13 @@ def run_paired_analysis(n_boot=10000):
         add(scope, "n_participants_max", int(g["n_participants"].max()))
         add(scope, "n_shapiro_reject", int((g["shapiro_p"] < ALPHA).sum()))
         add(scope, "n_equiv_wilcoxon", int(g["equiv_wilcoxon"].sum()))
+        add(scope, "n_equiv_ttest", int((g["tost_ttest_p"] < ALPHA).sum()))
+        add(scope, "n_equiv_rel5", int((g["tost_rel5_wilcoxon_p"] < ALPHA).sum()))
         g30 = g[g["horizon"] == 0.5]
         add(scope, "n_configs_30min", len(g30))
         add(scope, "n_equiv_wilcoxon_30min", int(g30["equiv_wilcoxon"].sum()))
         add(scope, "n_equiv_ttest_30min", int((g30["tost_ttest_p"] < ALPHA).sum()))
+        add(scope, "n_equiv_rel5_30min", int((g30["tost_rel5_wilcoxon_p"] < ALPHA).sum()))
     add("all", "equiv_margin_mgdl", EQUIV_MARGIN_MGDL)
     add("all", "source", source)
     add("all", "n_boot", n_boot)
@@ -307,10 +310,10 @@ def run_paired_analysis(n_boot=10000):
 
 def generate_latex_table(df_best, output_tex):
     lines = [r"\begin{table*}[t]", r"\centering", r"\scriptsize",
-             r"\setlength{\tabcolsep}{3pt}",
+             r"\setlength{\tabcolsep}{2.5pt}",
              r"\resizebox{\linewidth}{!}{%",
-             r"\begin{tabular}{lllclcccccc}", r"\toprule",
-             r"Dataset & Horizon & Context & $N$ & Best expert & $\Delta$ mean [95\% CI] & HL est.\ [95\% CI] & HBML better & $p$ & $p_{\mathrm{BH}}$ & $p_{\mathrm{TOST}}$ \\",
+             r"\begin{tabular}{lllclcccccccc}", r"\toprule",
+             r"Dataset & Horizon & Context & $N$ & Best expert & $\Delta$ mean [95\% CI] & HL est.\ [95\% CI] & HBML better & $p$ & $p_{\mathrm{BH}}$ & $p_{\mathrm{TOST, W}}$ & $p_{\mathrm{TOST}, t}$ & $p_{\mathrm{TOST}, 5\%}$ \\",
              r"\midrule"]
     cur = None
     for _, r in df_best.iterrows():
@@ -323,15 +326,20 @@ def generate_latex_table(df_best, output_tex):
         q_str = tex_p(q)
         if pd.notna(q) and q < ALPHA:
             q_str = f"\\textbf{{\\boldmath {q_str}}}"
-        tost_p = r.get("tost_wilcoxon_p", np.nan)
-        tost_str = tex_p(tost_p)
-        if pd.notna(tost_p) and tost_p < ALPHA:
-            tost_str = f"\\textbf{{\\boldmath {tost_str}}}"
+
+        def _fmt_tost(col):
+            tp = r.get(col, np.nan)
+            s = tex_p(tp)
+            if pd.notna(tp) and tp < ALPHA:
+                s = f"\\textbf{{\\boldmath {s}}}"
+            return s
+
         lines.append(
             f"{ds} & {HORIZON_LABEL[r['horizon']]} & {CONTEXT_LABEL[r['context']]} & {n} & {r['expert']} & "
             f"{r['paired_diff_mean']:+.2f} [{r['ci95_mean_low']:+.2f}, {r['ci95_mean_high']:+.2f}] & "
             f"{r['hodges_lehmann']:+.2f} [{r['hl_ci95_low']:+.2f}, {r['hl_ci95_high']:+.2f}] & "
-            f"{int(r['n_improved'])}/{n} ({r['pct_improved']:.1f}\\%) & {tex_p(r['wilcoxon_p'])} & {q_str} & {tost_str} \\\\")
+            f"{int(r['n_improved'])}/{n} ({r['pct_improved']:.1f}\\%) & {tex_p(r['wilcoxon_p'])} & {q_str} & "
+            f"{_fmt_tost('tost_wilcoxon_p')} & {_fmt_tost('tost_ttest_p')} & {_fmt_tost('tost_rel5_wilcoxon_p')} \\\\")
     lines += [r"\bottomrule", r"\end{tabular}%", r"}",
               r"\caption{\textbf{Participant-level paired comparisons and TOST equivalence between HBML and the best constituent expert.} "
               r"For each configuration, the best expert is the constituent model with the lowest cohort mean RMSE across the $N$ retained participants. "
@@ -339,9 +347,10 @@ def generate_latex_table(df_best, output_tex):
               r"positive values favour HBML and negative values favour the expert. Mean 95\% confidence intervals use BCa bootstrap "
               r"(10,000 resamples); HL est.\ reports the exact Hodges--Lehmann pseudomedian of paired differences with its "
               r"95\% Walsh distribution-free interval. $p$: two-sided paired Wilcoxon signed-rank test; $p_{\mathrm{BH}}$: Benjamini--Hochberg "
-              r"adjustment across the configurations shown; $p_{\mathrm{TOST}}$: two one-sided Wilcoxon tests for equivalence within the "
-              f"pre-specified margin $\\pm {EQUIV_MARGIN_MGDL:.1f}$~mg/dL (bold: $p < 0.05$). ``HBML better'' counts participants with "
-              r"strictly lower RMSE under HBML.}",
+              r"adjustment across the configurations shown; $p_{\mathrm{TOST, W}}$: primary non-parametric Wilcoxon TOST within "
+              f"$\\pm {EQUIV_MARGIN_MGDL:.1f}$~mg/dL; $p_{{\\mathrm{{TOST}}, t}}$: parametric paired $t$-test TOST within $\\pm {EQUIV_MARGIN_MGDL:.1f}$~mg/dL; "
+              r"$p_{\mathrm{TOST}, 5\%}$: Wilcoxon TOST within $\pm 5\%$ of each participant's best-expert RMSE (bold: $p < 0.05$). "
+              r"``HBML better'' counts participants with strictly lower RMSE under HBML.}",
               r"\label{tab:statistical_tests}", r"\end{table*}"]
     with open(output_tex, "w") as f:
         f.write("\n".join(lines) + "\n")
