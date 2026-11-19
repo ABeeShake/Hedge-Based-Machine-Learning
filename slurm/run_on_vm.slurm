@@ -1,4 +1,4 @@
-#!/bin/bash
+sq#!/bin/bash
 #SBATCH --job-name=hbml_run_vm
 #SBATCH --partition=LocalQ
 #SBATCH --cpus-per-task=8
