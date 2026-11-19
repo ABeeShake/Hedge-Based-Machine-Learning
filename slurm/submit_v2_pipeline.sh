@@ -48,7 +48,7 @@ ARRAY_SPEC="0-${MAX_IDX}%${THROTTLE}"
 echo "=============================================================================="
 echo "HBML Engine v2.1 Full SLURM Pipeline"
 echo "=============================================================================="
-echo "1. Archive legacy v1 outputs: bash archive_v1_outputs.sh"
+echo "1. Archive prior outputs:     bash archive_v1_outputs.sh (Outputs_v<ver>_<run>)"
 echo "2. Main 24-condition grid:    sbatch --array=${ARRAY_SPEC} slurm/submit_grid_simulation_array.slurm"
 echo "3. Population models (within): sbatch --array=0-5 slurm/secondary_population.slurm"
 echo "4. Population models (cross):  SCHEME=cross sbatch --array=0-5 slurm/secondary_population.slurm"
@@ -62,7 +62,7 @@ if [ "$DRY_RUN" = true ]; then
     exit 0
 fi
 
-echo ">>> Running engine unit tests and archiving legacy v1 outputs..."
+echo ">>> Running engine unit tests and archiving prior outputs..."
 "$PY" tests/test_engine.py
 bash archive_v1_outputs.sh
 
