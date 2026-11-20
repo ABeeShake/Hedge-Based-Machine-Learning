@@ -831,6 +831,40 @@ def generate_macros(strict=False, quiet=False):
             M.num(f"HypoParkesA{key}", to_float(r.get("parkes_a_pct", "")), 1)
             M.num(f"HypoParkesAB{key}", to_float(r.get("parkes_ab_pct", "")), 1)
 
+    rows = read_rows("hypoglycemia_threshold_sweep.csv")
+    if rows:
+        sources.append("hypoglycemia_threshold_sweep.csv")
+        t_word = {"70": "Seventy", "72": "SeventyTwo", "74": "SeventyFour", "76": "SeventySix", "78": "SeventyEight", "80": "Eighty", "82": "EightyTwo", "85": "EightyFive", "88": "EightyEight", "90": "Ninety"}
+        best_f1 = {}
+        best_ac = {}
+        for r in rows:
+            m_k = clean_name(r["model"])
+            t_raw = str(int(round(float(r["threshold_mgdl"]))))
+            t_k = t_word.get(t_raw, clean_name(t_raw))
+            key = f"{m_k}{t_k}"
+            es = to_float(r.get("episode_sensitivity_pct", ""))
+            cs = to_float(r.get("chance_sensitivity_pct", ""))
+            ac = to_float(r.get("above_chance_pp", ""))
+            fa = to_float(r.get("false_alerts_per_day", ""))
+            pf = to_float(r.get("point_f1_pct", ""))
+            M.num(f"HypoSweepEpSens{key}", es, 1)
+            M.num(f"HypoSweepChanceSens{key}", cs, 1)
+            M.num(f"HypoSweepAboveChance{key}", ac, 1)
+            M.num(f"HypoSweepFalseAlertsDay{key}", fa, 2)
+            M.num(f"HypoSweepPointFOne{key}", pf, 1)
+            if pf is not None and (m_k not in best_f1 or pf > best_f1[m_k][0]):
+                best_f1[m_k] = (pf, t_raw, es, fa)
+            if ac is not None and (m_k not in best_ac or ac > best_ac[m_k][0]):
+                best_ac[m_k] = (ac, t_raw, es, fa)
+        for m_k, (pf, t_raw, es, fa) in best_f1.items():
+            M.num(f"HypoSweepPeakFOne{m_k}", pf, 1)
+            M.add(f"HypoSweepPeakFOneThresh{m_k}", t_raw)
+            M.num(f"HypoSweepPeakFOneSens{m_k}", es, 1)
+            M.num(f"HypoSweepPeakFOneFAD{m_k}", fa, 2)
+        for m_k, (ac, t_raw, es, fa) in best_ac.items():
+            M.num(f"HypoSweepPeakAboveChance{m_k}", ac, 1)
+            M.add(f"HypoSweepPeakAboveChanceThresh{m_k}", t_raw)
+
     M.section("Operational glycemic regime summary (30-min, full history)")
     rows = read_rows("regime_summary_table.csv")
     if rows:

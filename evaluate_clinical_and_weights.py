@@ -802,7 +802,11 @@ def write_hypo_tex(rows, out_path, supplement=False):
             if v is None or str(v).strip() == "":
                 return "---"
             fv = float(v)
-            return "---" if math.isnan(fv) else f"{fv:+.1f}"
+            if math.isnan(fv):
+                return "---"
+            if abs(round(fv, 1)) < 1e-9:
+                return "+0.0"
+            return f"{fv:+.1f}"
         ch_cells = f" & {_fmt1(r.get('chance_sensitivity_pct'))} & {_fmts1(r.get('above_chance_pp'))}" if has_chance else ""
         lines.append(
             f"{ds} & {r['horizon']} hr & {m} & {r['n_participants']} & {r['n_episodes']} & "
