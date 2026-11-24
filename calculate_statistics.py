@@ -10,6 +10,15 @@ For every dataset x horizon x context and every expert:
   - paired difference  delta_i = RMSE_expert,i - RMSE_HBML,i   (positive = HBML better)
   - BCa bootstrap 95% CI for the mean and the median difference (10,000 resamples)
   - two-sided Wilcoxon signed-rank test (primary) and paired t-test (with degrees of freedom)
+  - equivalence within +/- equiv_margin_mgdl (globals). Primary estimand: the cohort-mean paired
+    difference, tested by a participant-level bootstrap TOST (equivalence iff the 90% percentile
+    interval lies inside the margin; p = max of the two one-sided bootstrap tail fractions).
+    Secondary: paired t TOST (mean) and Wilcoxon TOST (pseudomedian; assumes symmetric differences).
+  - relative 5% margin: bootstrap TOST on per-participant relative differences delta_i / RMSE_expert,i
+    within +/- 5% (so the margin is each participant's own 5%, not 5% of the cohort mean)
+  Wilcoxon tests use scipy defaults made explicit: zero differences dropped (zero_method="wilcox"),
+  exact null distribution when n <= 50 and there are no ties/zeros, otherwise the normal
+  approximation with tie correction (method="auto").
   - Shapiro-Wilk test of the paired differences
   - Benjamini-Hochberg adjusted Wilcoxon p-values (within the best-expert family, and within all experts)
   - win / tie / loss counts
@@ -71,15 +80,40 @@ def hodges_lehmann_ci(d, alpha=ALPHA):
     return est, float(walsh[lo_idx]), float(walsh[hi_idx])
 
 
+def bootstrap_tost(x, margin, n_boot=10000, seed=42):
+    """Participant-level bootstrap TOST for the mean of x within [-margin, +margin].
+
+    Returns (p, lo90, hi90): p = max(P*(mean <= -margin), P*(mean >= +margin)) with the (k+1)/(B+1)
+    correction, and the 90% percentile interval of the bootstrap mean. p < 0.05 <=> the 90%
+    interval lies strictly inside the margin (CI-inclusion form of TOST at alpha = 0.05).
+    """
+    x = np.asarray(x, dtype=float)
+    x = x[~np.isnan(x)]
+    if len(x) < 6 or margin <= 0:
+        return np.nan, np.nan, np.nan
+    rng = np.random.default_rng(seed)
+    means = np.empty(n_boot)
+    for i in range(0, n_boot, 1000):           # chunked to bound memory for large cohorts
+        k = min(1000, n_boot - i)
+        means[i:i + k] = x[rng.integers(0, len(x), size=(k, len(x)))].mean(axis=1)
+    p1 = ((means <= -margin).sum() + 1) / (n_boot + 1)
+    p2 = ((means >= margin).sum() + 1) / (n_boot + 1)
+    lo, hi = np.percentile(means, [5, 95])
+    return float(max(p1, p2)), float(lo), float(hi)
+
+
 def tost_equivalence(d, margin):
-    """Two one-sided tests (TOST) on paired differences d for [-margin, +margin]."""
+    """Two one-sided tests (TOST) on paired differences d for [-margin, +margin].
+
+    Wilcoxon TOST targets the pseudomedian (assumes symmetric differences); t TOST targets the mean.
+    """
     d = np.asarray(d, dtype=float)
     d = d[np.isfinite(d)]
     if len(d) < 6 or margin <= 0:
         return np.nan, np.nan
     try:
-        p1 = float(wilcoxon(d + margin, alternative="greater").pvalue)
-        p2 = float(wilcoxon(d - margin, alternative="less").pvalue)
+        p1 = float(wilcoxon(d + margin, alternative="greater", zero_method="wilcox", method="auto").pvalue)
+        p2 = float(wilcoxon(d - margin, alternative="less", zero_method="wilcox", method="auto").pvalue)
         w_tost = max(p1, p2)
     except Exception:
         w_tost = np.nan
@@ -214,9 +248,12 @@ def run_paired_analysis(n_boot=10000):
                     mlo, mhi, mmeth = boot_ci(d, np.median, n_boot)
                     hl_est, hl_lo, hl_hi = hodges_lehmann_ci(d)
                     tost_w_p, tost_t_p = tost_equivalence(d, EQUIV_MARGIN_MGDL)
-                    tost_rel5_w_p, _ = tost_equivalence(d, 0.05 * ex.mean())
+                    tost_boot_p, tost_boot_lo, tost_boot_hi = bootstrap_tost(d, EQUIV_MARGIN_MGDL, n_boot)
+                    # relative margin: each participant's own 5% (delta_i / RMSE_expert,i within +/-0.05)
+                    rel = d / ex
+                    tost_rel5_p, rel5_lo, rel5_hi = bootstrap_tost(rel, 0.05, n_boot)
                     try:
-                        w = wilcoxon(ex, hb, alternative="two-sided")
+                        w = wilcoxon(ex, hb, alternative="two-sided", zero_method="wilcox", method="auto")
                         w_stat, w_p = float(w.statistic), float(w.pvalue)
                     except Exception:
                         w_stat, w_p = np.nan, np.nan
@@ -241,7 +278,10 @@ def run_paired_analysis(n_boot=10000):
                         ci_method_mean=meth, ci_method_median=mmeth,
                         wilcoxon_w=w_stat, wilcoxon_p=w_p,
                         tost_margin_mgdl=EQUIV_MARGIN_MGDL, tost_wilcoxon_p=tost_w_p, tost_ttest_p=tost_t_p,
-                        tost_rel5_wilcoxon_p=tost_rel5_w_p,
+                        tost_boot_p=tost_boot_p, tost_boot_ci90_low=tost_boot_lo, tost_boot_ci90_high=tost_boot_hi,
+                        equiv_boot=bool(pd.notna(tost_boot_p) and tost_boot_p < ALPHA),
+                        tost_rel5_p=tost_rel5_p, rel_diff_mean_pct=100.0 * float(np.mean(rel)),
+                        rel5_ci90_low_pct=100.0 * rel5_lo, rel5_ci90_high_pct=100.0 * rel5_hi,
                         equiv_wilcoxon=bool(pd.notna(tost_w_p) and tost_w_p < ALPHA),
                         ttest_t=float(t.statistic), ttest_df=n - 1, ttest_p=float(t.pvalue),
                         shapiro_p=sw_p,
@@ -289,14 +329,16 @@ def run_paired_analysis(n_boot=10000):
         add(scope, "n_participants_min", int(g["n_participants"].min()))
         add(scope, "n_participants_max", int(g["n_participants"].max()))
         add(scope, "n_shapiro_reject", int((g["shapiro_p"] < ALPHA).sum()))
+        add(scope, "n_equiv_boot", int(g["equiv_boot"].sum()))
         add(scope, "n_equiv_wilcoxon", int(g["equiv_wilcoxon"].sum()))
         add(scope, "n_equiv_ttest", int((g["tost_ttest_p"] < ALPHA).sum()))
-        add(scope, "n_equiv_rel5", int((g["tost_rel5_wilcoxon_p"] < ALPHA).sum()))
+        add(scope, "n_equiv_rel5", int((g["tost_rel5_p"] < ALPHA).sum()))
         g30 = g[g["horizon"] == 0.5]
         add(scope, "n_configs_30min", len(g30))
+        add(scope, "n_equiv_boot_30min", int(g30["equiv_boot"].sum()))
         add(scope, "n_equiv_wilcoxon_30min", int(g30["equiv_wilcoxon"].sum()))
         add(scope, "n_equiv_ttest_30min", int((g30["tost_ttest_p"] < ALPHA).sum()))
-        add(scope, "n_equiv_rel5_30min", int((g30["tost_rel5_wilcoxon_p"] < ALPHA).sum()))
+        add(scope, "n_equiv_rel5_30min", int((g30["tost_rel5_p"] < ALPHA).sum()))
     add("all", "equiv_margin_mgdl", EQUIV_MARGIN_MGDL)
     add("all", "source", source)
     add("all", "n_boot", n_boot)
@@ -312,8 +354,8 @@ def generate_latex_table(df_best, output_tex):
     lines = [r"\begin{table*}[t]", r"\centering", r"\scriptsize",
              r"\setlength{\tabcolsep}{2.5pt}",
              r"\resizebox{\linewidth}{!}{%",
-             r"\begin{tabular}{lllclcccccccc}", r"\toprule",
-             r"Dataset & Horizon & Context & $N$ & Best expert & $\Delta$ mean [95\% CI] & HL est.\ [95\% CI] & HBML better & $p$ & $p_{\mathrm{BH}}$ & $p_{\mathrm{TOST, W}}$ & $p_{\mathrm{TOST}, t}$ & $p_{\mathrm{TOST}, 5\%}$ \\",
+             r"\begin{tabular}{lllclcccccccccc}", r"\toprule",
+             r"Dataset & Horizon & Context & $N$ & Best expert & $\Delta$ mean [95\% CI] & HL est.\ [95\% CI] & HBML better & $p$ & $p_{\mathrm{BH}}$ & $\Delta$ mean 90\% CI & $p_{\mathrm{TOST,boot}}$ & $p_{\mathrm{TOST}, t}$ & $p_{\mathrm{TOST, W}}$ & $p_{\mathrm{TOST}, 5\%}$ \\",
              r"\midrule"]
     cur = None
     for _, r in df_best.iterrows():
@@ -329,7 +371,8 @@ def generate_latex_table(df_best, output_tex):
 
         def _fmt_tost(col):
             tp = r.get(col, np.nan)
-            s = tex_p(tp)
+            boot = col in ("tost_boot_p", "tost_rel5_p")
+            s = "$<10^{-4}$" if (boot and pd.notna(tp) and tp <= 1.0001 / 10000) else tex_p(tp)
             if pd.notna(tp) and tp < ALPHA:
                 s = f"\\textbf{{\\boldmath {s}}}"
             return s
@@ -339,7 +382,9 @@ def generate_latex_table(df_best, output_tex):
             f"{r['paired_diff_mean']:+.2f} [{r['ci95_mean_low']:+.2f}, {r['ci95_mean_high']:+.2f}] & "
             f"{r['hodges_lehmann']:+.2f} [{r['hl_ci95_low']:+.2f}, {r['hl_ci95_high']:+.2f}] & "
             f"{int(r['n_improved'])}/{n} ({r['pct_improved']:.1f}\\%) & {tex_p(r['wilcoxon_p'])} & {q_str} & "
-            f"{_fmt_tost('tost_wilcoxon_p')} & {_fmt_tost('tost_ttest_p')} & {_fmt_tost('tost_rel5_wilcoxon_p')} \\\\")
+            f"[{r['tost_boot_ci90_low']:+.2f}, {r['tost_boot_ci90_high']:+.2f}] & "
+            f"{_fmt_tost('tost_boot_p')} & {_fmt_tost('tost_ttest_p')} & {_fmt_tost('tost_wilcoxon_p')} & "
+            f"{_fmt_tost('tost_rel5_p')} \\\\")
     lines += [r"\bottomrule", r"\end{tabular}%", r"}",
               r"\caption{\textbf{Participant-level paired comparisons and TOST equivalence between HBML and the best constituent expert.} "
               r"For each configuration, the best expert is the constituent model with the lowest cohort mean RMSE across the $N$ retained participants. "
@@ -347,9 +392,12 @@ def generate_latex_table(df_best, output_tex):
               r"positive values favour HBML and negative values favour the expert. Mean 95\% confidence intervals use BCa bootstrap "
               r"(10,000 resamples); HL est.\ reports the exact Hodges--Lehmann pseudomedian of paired differences with its "
               r"95\% Walsh distribution-free interval. $p$: two-sided paired Wilcoxon signed-rank test; $p_{\mathrm{BH}}$: Benjamini--Hochberg "
-              r"adjustment across the configurations shown; $p_{\mathrm{TOST, W}}$: primary non-parametric Wilcoxon TOST within "
-              f"$\\pm {EQUIV_MARGIN_MGDL:.1f}$~mg/dL; $p_{{\\mathrm{{TOST}}, t}}$: parametric paired $t$-test TOST within $\\pm {EQUIV_MARGIN_MGDL:.1f}$~mg/dL; "
-              r"$p_{\mathrm{TOST}, 5\%}$: Wilcoxon TOST within $\pm 5\%$ of each participant's best-expert RMSE (bold: $p < 0.05$). "
+              r"adjustment across the configurations shown (zero differences dropped; exact null for $N \le 50$ without ties, otherwise normal approximation). "
+              f"Equivalence margin $\\pm {EQUIV_MARGIN_MGDL:.1f}$~mg/dL (chosen post hoc; exploratory). "
+              r"Primary equivalence estimand: the mean paired difference, tested by participant-level bootstrap TOST "
+              r"($\Delta$ mean 90\% CI: percentile interval, 10,000 resamples; $p_{\mathrm{TOST,boot}} < 0.05$ iff that interval lies inside the margin). "
+              r"Secondary: $p_{\mathrm{TOST}, t}$, paired $t$-test TOST (mean); $p_{\mathrm{TOST, W}}$, Wilcoxon TOST, which targets the pseudomedian and assumes symmetric differences; "
+              r"$p_{\mathrm{TOST}, 5\%}$, bootstrap TOST of the per-participant relative difference $\Delta_i/\text{RMSE}_{i,\text{best}}$ within $\pm 5\%$, i.e.\ each participant's own 5\% margin (bold: $p < 0.05$). "
               r"``HBML better'' counts participants with strictly lower RMSE under HBML.}",
               r"\label{tab:statistical_tests}", r"\end{table*}"]
     with open(output_tex, "w") as f:

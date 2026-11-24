@@ -10,6 +10,9 @@ the canonical ``ExpMethods.aggregators``, ``ExpMethods.evaluation``, and
 Outputs (all in ``overleaf/tables/``):
   - ``weight_diagnostics.csv``
   - ``hypoglycemia_events.csv`` & ``table_hypoglycemia_events.tex``
+  - ``hypoglycemia_threshold_sweep.csv`` (70-90 mg/dL alert thresholds, every detector)
+  - ``hypoglycemia_matched_far.csv`` (sensitivity at matched false-alert rates and minimum
+    warning times 0/10/15/20 min, participant-clustered bootstrap 95% intervals)
   - ``regime_summary_table.csv`` & ``table_regime_summary.tex``
 ===============================================================================
 """
@@ -30,6 +33,8 @@ from ExpMethods import aggregators as agg  # noqa: E402
 from ExpMethods import evaluation as ev  # noqa: E402
 from ExpMethods.globals import GlobalValues as G  # noqa: E402
 from fast_engine.simulation import ENGINE_VERSION  # noqa: E402
+# Set HBML_EVAL_ENGINE=2.2 to run these analyses on the cached v2.2 forecasts before the v2.3 re-run.
+ENGINE_VERSION = os.environ.get("HBML_EVAL_ENGINE", ENGINE_VERSION)
 
 TABLES_DIR = os.path.join(BASE_DIR, "overleaf", "tables")
 OUTPUTS_DIR = os.path.join(BASE_DIR, "Outputs")
@@ -232,14 +237,74 @@ def run_participant(dataset, pid, fc_path, h_steps):
     }
 
 
+WARNING_MINUTES = (0, 10, 15, 20)
+
+
+def find_hypo_episodes(y, true_thresh=70.0, min_ep_slots=3, min_gap_slots=6, join_slots=2,
+                       onset_lookback_slots=6):
+    """True hypoglycaemic episodes on the full observed trajectory (every real reading, scored or not).
+
+    Readings < true_thresh are joined into runs across at most `join_slots` - 1 missing slots; runs
+    closer than `min_gap_slots` (30 min) are merged; runs with >= `min_ep_slots` readings below the
+    threshold (15 min) are episodes. Returns (episodes, n_left_censored): an episode is left-censored,
+    and excluded, when no real reading >= true_thresh lies in the `onset_lookback_slots` (30 min)
+    before its first low reading, because its onset time is then unknown (recording start, or onset
+    inside a gap).
+    """
+    y = np.asarray(y, dtype=float)
+    obs = np.flatnonzero(~np.isnan(y))
+    low = obs[y[obs] < true_thresh]
+    runs = []
+    for t in low:
+        t = int(t)
+        if runs and t - runs[-1][1] <= join_slots:
+            runs[-1][1] = t
+            runs[-1][2] += 1
+        else:
+            runs.append([t, t, 1])
+    merged = []
+    for st, en, k in runs:
+        if merged and st - merged[-1][1] < min_gap_slots:
+            merged[-1][1] = en
+            merged[-1][2] += k
+        else:
+            merged.append([st, en, k])
+    episodes, n_cens = [], 0
+    for st, en, k in merged:
+        if k < min_ep_slots:
+            continue
+        pre = y[max(0, st - onset_lookback_slots):st]
+        if not np.any(pre[~np.isnan(pre)] >= true_thresh):
+            n_cens += 1
+            continue
+        episodes.append((st, en))
+    return episodes, n_cens
+
+
 def evaluate_hypo_trajectory(y, pred, scored_mask, h, diabetes_type=1,
                              thresh=70.0, true_thresh=70.0, min_ep_slots=3, min_gap_slots=6,
-                             n_chance_shifts=200, compute_parkes=True):
-    """Pre-onset episode hypoglycaemia detection (true <true_thresh, alarm pred <thresh),
-    circular time-shifted chance baseline, point metrics, and Parkes Grid."""
+                             n_chance_shifts=200, compute_parkes=True, warning_minutes=WARNING_MINUTES):
+    """Pre-onset episode hypoglycaemia detection, warning time, chance baseline, point metrics, Parkes.
+
+    Episodes come from the full observed trajectory (find_hypo_episodes; left-censored episodes
+    excluded). An episode is *evaluable* when at least one forecast targeting it was issued before
+    onset (a scored target t in [st, en] with origin t - h < st); only evaluable episodes enter the
+    denominator. Alerts are scored forecasts below `thresh`. One-to-one matching: an episode is
+    detected at most once, by its earliest pre-onset alert; with minimum warning time W minutes it is
+    detected only if that alert's origin t - h is <= st - W/5 slots (W = 0: strictly before onset).
+    False alerts: alert clusters (alerts within `min_gap_slots` = 30 min merged, i.e. a 30-min
+    refractory period) with no real reading < true_thresh within +/- 2 slots. Rates use scored days
+    (scored targets / 288).
+
+    Chance baseline: the participant's alert sequence over scored targets is circularly shifted by
+    up to `n_chance_shifts` evenly spaced lags in [h + 12, n - h - 12] scored positions (wrapping
+    around the end of the record), and the mean pre-onset hit rate over lags is the chance sensitivity.
+    """
     idx = np.flatnonzero(scored_mask)
     if len(idx) == 0:
         return None
+    y = np.asarray(y, dtype=float)
+    pred = np.asarray(pred, dtype=float)
     n_scored = len(idx)
     days = n_scored / 288.0
 
@@ -265,61 +330,43 @@ def evaluate_hypo_trajectory(y, pred, scored_mask, h, diabetes_type=1,
         else:
             tn += 1
 
-    # Contiguous true hypoglycaemic episodes (>= min_ep_slots, separated by >= min_gap_slots)
-    raw_runs = []
-    cur_start = cur_end = None
-    for t in idx:
-        if y[t] < true_thresh:
-            if cur_start is None:
-                cur_start = cur_end = int(t)
-            elif int(t) - cur_end <= 2:
-                cur_end = int(t)
-            else:
-                raw_runs.append([cur_start, cur_end])
-                cur_start = cur_end = int(t)
-    if cur_start is not None:
-        raw_runs.append([cur_start, cur_end])
-
-    merged = []
-    for st, en in raw_runs:
-        if merged and (st - merged[-1][1] < min_gap_slots):
-            merged[-1][1] = en
-        else:
-            merged.append([st, en])
-    episodes = [(st, en) for st, en in merged if (en - st + 1) >= min_ep_slots]
-
+    all_eps, n_cens = find_hypo_episodes(y, true_thresh, min_ep_slots, min_gap_slots)
     idx_pos = {int(slot): pos for pos, slot in enumerate(idx)}
-    detected_pre = 0
-    detected_any = 0
-    lead_times_det_min = []
-    lead_times_all_min = []
-    ep_pre_positions = []
+    episodes, ep_pre_positions = [], []
+    for st, en in all_eps:
+        pre_pos = [idx_pos[t] for t in range(st, min(en, st + h - 1) + 1) if t in idx_pos and t - h < st]
+        if pre_pos:
+            episodes.append((st, en))
+            ep_pre_positions.append(pre_pos)
+    n_not_evaluable = len(all_eps) - len(episodes)
+
+    detected_pre = detected_any = 0
+    detected_w = {w: 0 for w in warning_minutes}
+    lead_times_det_min, lead_times_all_min = [], []
     for st, en in episodes:
-        # Strict pre-onset alert: forecast targeting slot t in [st, en] was issued at t - h < st
         first_pre = None
         any_hit = False
-        pre_pos = []
         for t in range(st, en + 1):
-            if scored_mask[t]:
-                if (t - h) < st and t in idx_pos:
-                    pre_pos.append(idx_pos[t])
-                if pred[t] < thresh:
-                    any_hit = True
-                    if (t - h) < st and first_pre is None:
-                        first_pre = t
-        ep_pre_positions.append(pre_pos)
+            if scored_mask[t] and pred[t] < thresh:
+                any_hit = True
+                if (t - h) < st and first_pre is None:
+                    first_pre = t
         if any_hit:
             detected_any += 1
+        # earliest alert issued before onset (largest warning) among targets in the episode
+        pre_alert_origins = [t - h for t in range(st, en + 1)
+                             if scored_mask[t] and (t - h) < st and pred[t] < thresh]
         if first_pre is not None:
             detected_pre += 1
-            lt = float(st - (first_pre - h)) * 5.0
+            lt = float(st - min(pre_alert_origins)) * 5.0
             lead_times_det_min.append(lt)
             lead_times_all_min.append(lt)
+            for w in warning_minutes:
+                if lt >= max(w, 5.0):
+                    detected_w[w] += 1
         else:
             lead_times_all_min.append(0.0)
 
-    # Time-shifted chance baseline: circularly shift the participant's alert sequence
-    # outside a +/- (h + 12)-slot exclusion window around zero lag.
     chance_detected_sum = 0.0
     if episodes and n_chance_shifts > 0 and n_scored > 1:
         alert_vec = (pred[idx] < thresh)
@@ -331,13 +378,10 @@ def evaluate_hypo_trajectory(y, pred, scored_mask, h, diabetes_type=1,
         else:
             shifts = np.array([1], dtype=int)
         for pre_pos in ep_pre_positions:
-            if not pre_pos:
-                continue
             p_arr = np.asarray(pre_pos, dtype=int)[:, None]
             hits = alert_vec[(p_arr - shifts[None, :]) % n_scored].any(axis=0)
             chance_detected_sum += float(np.mean(hits))
 
-    # False alert clusters: contiguous runs of pred < thresh with no true y < true_thresh within +/- 2 slots
     pred_runs = []
     p_start = p_end = None
     for t in idx:
@@ -351,23 +395,20 @@ def evaluate_hypo_trajectory(y, pred, scored_mask, h, diabetes_type=1,
                 p_start = p_end = int(t)
     if p_start is not None:
         pred_runs.append((p_start, p_end))
-
     false_clusters = 0
     n_tot = len(y)
     for st, en in pred_runs:
-        w_lo = max(0, st - 2)
-        w_hi = min(n_tot - 1, en + 2)
-        if not any(scored_mask[tau] and y[tau] < true_thresh for tau in range(w_lo, w_hi + 1)):
+        win = y[max(0, st - 2):min(n_tot, en + 3)]
+        if not np.any(win[~np.isnan(win)] < true_thresh):
             false_clusters += 1
 
-    return {
+    out = {
         "n_scored": n_scored,
         "days": days,
-        "tp": tp,
-        "fp": fp,
-        "fn": fn,
-        "tn": tn,
+        "tp": tp, "fp": fp, "fn": fn, "tn": tn,
         "n_episodes": len(episodes),
+        "n_episodes_left_censored": n_cens,
+        "n_episodes_not_evaluable": n_not_evaluable,
         "n_detected": detected_pre,
         "n_detected_any": detected_any,
         "chance_detected_sum": chance_detected_sum,
@@ -377,13 +418,77 @@ def evaluate_hypo_trajectory(y, pred, scored_mask, h, diabetes_type=1,
         "parkes_a_pct": (100.0 * parkes_a / n_scored) if compute_parkes else float("nan"),
         "parkes_ab_pct": (100.0 * parkes_ab / n_scored) if compute_parkes else float("nan"),
     }
+    for w in warning_minutes:
+        out[f"n_detected_w{w}"] = detected_w[w]
+    return out
+
+
+def matched_far_comparison(pp_rows, far_targets=(0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 1.0),
+                           warning_minutes=WARNING_MINUTES, n_boot=2000, seed=7,
+                           reference="HBML", comparators=("Persistence", "BestExpert")):
+    """Sensitivity at matched false-alert rates with participant-clustered bootstrap intervals.
+
+    pp_rows: one dict per (model, threshold, participant) with n_episodes, n_detected_w{W},
+    false_clusters and days. For each model the pooled curve over thresholds (false alerts per
+    scored day, pre-onset sensitivity) is linearly interpolated at each target rate; targets outside
+    a model's swept range are NaN (no extrapolation). Participants are resampled with replacement
+    (the same resample for every model), giving 95% percentile intervals for each sensitivity and
+    for the paired difference reference - comparator.
+    """
+    models = sorted({r["model"] for r in pp_rows})
+    thrs = sorted({float(r["threshold_mgdl"]) for r in pp_rows})
+    pids = sorted({r["pid"] for r in pp_rows})
+    P = {p: i for i, p in enumerate(pids)}
+    keys = ["n_episodes", "false_clusters", "days"] + [f"n_detected_w{w}" for w in warning_minutes]
+    A = {m: {k: np.zeros((len(thrs), len(pids))) for k in keys} for m in models}
+    for r in pp_rows:
+        ti, pi = thrs.index(float(r["threshold_mgdl"])), P[r["pid"]]
+        for k in keys:
+            A[r["model"]][k][ti, pi] = float(r[k])
+
+    def curve(m, w, wts):
+        ep = A[m]["n_episodes"] @ wts
+        det = A[m][f"n_detected_w{w}"] @ wts
+        far = (A[m]["false_clusters"] @ wts) / np.maximum(A[m]["days"] @ wts, 1e-9)
+        sens = np.where(ep > 0, 100.0 * det / np.maximum(ep, 1e-9), np.nan)
+        o = np.argsort(far, kind="stable")
+        far, sens = far[o], sens[o]
+        tgt = np.asarray(far_targets, dtype=float)
+        v = np.interp(tgt, far, sens)
+        v[(tgt < far[0]) | (tgt > far[-1])] = np.nan
+        return v
+
+    rng = np.random.default_rng(seed)
+    ones = np.ones(len(pids))
+    boots = [np.bincount(rng.integers(0, len(pids), len(pids)), minlength=len(pids)).astype(float)
+             for _ in range(n_boot)]
+    rows = []
+    n_with_ep = int((A[models[0]]["n_episodes"].max(axis=0) > 0).sum()) if models else 0
+    for w in warning_minutes:
+        est = {m: curve(m, w, ones) for m in models}
+        bs = {m: np.array([curve(m, w, b) for b in boots]) for m in models}
+        for j, f in enumerate(far_targets):
+            for m in models:
+                lo, hi = np.nanpercentile(bs[m][:, j], [2.5, 97.5]) if np.isfinite(est[m][j]) else (np.nan, np.nan)
+                row = dict(min_warning_min=w, false_alerts_per_day=f, model=m, sensitivity_pct=est[m][j],
+                           ci95_low=lo, ci95_high=hi, n_participants=len(pids),
+                           n_participants_with_episodes=n_with_ep)
+                if m != reference and reference in est:
+                    d = est[reference][j] - est[m][j]
+                    db = bs[reference][:, j] - bs[m][:, j]
+                    ok = np.isfinite(db)
+                    row.update(diff_vs_reference_pp=d,
+                               diff_ci95_low=np.percentile(db[ok], 2.5) if ok.sum() > 10 and np.isfinite(d) else np.nan,
+                               diff_ci95_high=np.percentile(db[ok], 97.5) if ok.sum() > 10 and np.isfinite(d) else np.nan)
+                rows.append(row)
+    return rows
 
 
 _REGIME_CACHE = {}
 
 
 def classify_regimes_stdlib(dataset, pid, y):
-    """Classify timesteps into the 6 operational regimes matching compute_regimes.py."""
+    """Classify timesteps into the 7 operational regimes matching compute_regimes.py."""
     key = (dataset, pid, len(y))
     if key in _REGIME_CACHE:
         return _REGIME_CACHE[key]
@@ -420,6 +525,8 @@ def classify_regimes_stdlib(dataset, pid, y):
             reg = "RECOVERY"
         if gt < 80.0 and math.isfinite(slope) and slope < -1.0:
             reg = "HYPO_TRANS"
+        if reg == "STABLE" and not (70.0 <= gt <= 180.0):
+            reg = "STABLE_OOR"   # stable but outside 70-180 mg/dL: not euglycaemia
         regimes[t] = reg
     _REGIME_CACHE[key] = regimes
     return regimes
@@ -488,6 +595,7 @@ def main():
     weight_rows = []
     hypo_rows = []
     sweep_rows = []
+    sweep_pp_rows = []
     regime_rows = []
 
     for ds in ("weinstock", "cgmacros"):
@@ -566,11 +674,18 @@ def main():
                         leads_all = []
                         pa_list = []
                         pab_list = []
+                        cens_tot = noeval_tot = n_p_ep = 0
+                        det_w_tot = Counter()
                         for r in p_res:
                             dtype = 2 if (ds == "cgmacros" and r["pid"] in T2D_IDS) else 1
                             ev_r = evaluate_hypo_trajectory(r["y"], get_pred(r), r["scored_mask"], h_steps, diabetes_type=dtype)
                             if not ev_r:
                                 continue
+                            cens_tot += ev_r["n_episodes_left_censored"]
+                            noeval_tot += ev_r["n_episodes_not_evaluable"]
+                            n_p_ep += int(ev_r["n_episodes"] > 0)
+                            for w in WARNING_MINUTES:
+                                det_w_tot[w] += ev_r[f"n_detected_w{w}"]
                             ep_tot += ev_r["n_episodes"]
                             det_tot += ev_r["n_detected"]
                             det_any_tot += ev_r["n_detected_any"]
@@ -601,9 +716,14 @@ def main():
                             "model": m_label.split(" ")[0],
                             "best_expert_name": best_exp,
                             "n_participants": n_p,
+                            "n_participants_with_episodes": n_p_ep,
                             "n_episodes": ep_tot,
+                            "n_episodes_left_censored": cens_tot,
+                            "n_episodes_not_evaluable": noeval_tot,
                             "n_detected": det_tot,
                             "episode_sensitivity_pct": ep_sens,
+                            **{f"sensitivity_warn{w}min_pct": (100.0 * det_w_tot[w] / ep_tot if ep_tot else float("nan"))
+                               for w in WARNING_MINUTES},
                             "episode_sensitivity_any_pct": ep_sens_any,
                             "chance_sensitivity_pct": chance_sens,
                             "above_chance_pp": above_chance,
@@ -623,6 +743,7 @@ def main():
                                 ep_tot = det_tot = tp_tot = fp_tot = fn_tot = 0
                                 chance_tot = days_tot = 0.0
                                 fc_tot = 0
+                                det_w_tot = Counter()
                                 for r in p_res:
                                     ev_r = evaluate_hypo_trajectory(
                                         r["y"], get_pred(r), r["scored_mask"], h_steps,
@@ -630,6 +751,13 @@ def main():
                                     )
                                     if not ev_r:
                                         continue
+                                    sweep_pp_rows.append(dict(
+                                        model=m_label.split(" ")[0], threshold_mgdl=thr, pid=r["pid"],
+                                        n_episodes=ev_r["n_episodes"], false_clusters=ev_r["false_clusters"],
+                                        days=ev_r["days"],
+                                        **{f"n_detected_w{w}": ev_r[f"n_detected_w{w}"] for w in WARNING_MINUTES}))
+                                    for w in WARNING_MINUTES:
+                                        det_w_tot[w] += ev_r[f"n_detected_w{w}"]
                                     ep_tot += ev_r["n_episodes"]
                                     det_tot += ev_r["n_detected"]
                                     chance_tot += ev_r["chance_detected_sum"]
@@ -654,6 +782,8 @@ def main():
                                     "n_episodes": ep_tot,
                                     "n_detected": det_tot,
                                     "episode_sensitivity_pct": ep_sens,
+                                    **{f"sensitivity_warn{w}min_pct": (100.0 * det_w_tot[w] / ep_tot if ep_tot else float("nan"))
+                                       for w in WARNING_MINUTES},
                                     "chance_sensitivity_pct": ch_sens,
                                     "above_chance_pp": ep_sens - ch_sens,
                                     "false_alerts_per_day": fc_tot / max(days_tot, 1e-6),
@@ -662,7 +792,7 @@ def main():
                                 })
 
                 if ctx == "full" and h_str == "half" and matches and not hypo_only:
-                    reg_order = ["STABLE", "RISING", "FALLING", "HIGHVAR", "RECOVERY", "HYPO_TRANS"]
+                    reg_order = ["STABLE", "STABLE_OOR", "RISING", "FALLING", "HIGHVAR", "RECOVERY", "HYPO_TRANS"]
                     reg_se_hbml = defaultdict(list)
                     reg_se_exp = {c: defaultdict(list) for c in cols}
                     reg_win_counts = {reg: Counter() for reg in reg_order}
@@ -755,6 +885,16 @@ def main():
             w.writeheader()
             w.writerows(sweep_rows)
         print(f"Wrote {s_path} ({len(sweep_rows)} rows)")
+        if sweep_pp_rows:
+            mf_rows = matched_far_comparison(sweep_pp_rows)
+            mf_path = os.path.join(TABLES_DIR, "hypoglycemia_matched_far.csv")
+            with open(mf_path, "w", newline="") as f:
+                fields = sorted({k for r in mf_rows for k in r}, key=lambda k: list(mf_rows[-1]).index(k)
+                                if k in mf_rows[-1] else 99)
+                w = csv.DictWriter(f, fieldnames=fields)
+                w.writeheader()
+                w.writerows(mf_rows)
+            print(f"Wrote {mf_path} ({len(mf_rows)} rows; participant-clustered bootstrap)")
         if not no_plots:
             _plot_threshold_sweep(sweep_rows, os.path.join(BASE_DIR, "overleaf", "images", "clinical", "fig_hypo_threshold_sweep.pdf"))
 
@@ -825,11 +965,12 @@ def write_hypo_tex(rows, out_path, supplement=False):
     else:
         cap = (
             r"\caption{\textbf{30-minute pre-onset hypoglycaemia ($<70$~mg/dL) episode detection and Parkes consensus error grid performance (full-history context).} "
-            r"True hypoglycaemic episodes are contiguous runs of $\ge 3$ scored readings ($15$~min) below $70$~mg/dL separated by $\ge 30$~min at or above $70$~mg/dL across the $N$ retained participants. "
-            r"Pre-onset episode sensitivity counts only episodes detected by at least one forecast issued strictly prior to episode onset ($t_{\text{issue}} = t - h < t_{\text{start}}$). "
+            r"True hypoglycaemic episodes are runs of $\ge 3$ real readings ($15$~min) below $70$~mg/dL on the full observed trajectory, merged when $<30$~min apart, across the $N$ retained participants; "
+            r"left-censored episodes (no reading $\ge 70$~mg/dL in the preceding 30~min) and episodes with no forecast issued before onset are excluded from ``Episodes''. "
+            r"Pre-onset episode sensitivity counts episodes detected (one-to-one, by the earliest alert) by a forecast below 70~mg/dL issued strictly before onset ($t_{\text{issue}} = t - h < t_{\text{start}}$). "
             + (r"``Chance sens.'' and ``Above chance'' report expected pre-onset sensitivity under circular time-shifted alerts within each participant and the net gain over chance in percentage points. " if has_chance else "")
             + r"``Lead (all, min)'' reports the unconditional mean warning time prior to episode onset across all episodes (counting missed episodes as $0$~min), whereas ``Lead (det., min)'' averages over detected episodes. "
-            r"Point PPV and $F_1$ evaluate timestep-level hypoglycaemia classification; false alerts per day count predicted $<70$~mg/dL alert clusters when reference glucose remained $\ge 70$~mg/dL throughout the $\pm 10$-min window; "
+            r"Point PPV and $F_1$ evaluate timestep-level hypoglycaemia classification; false alerts per scored participant-day count alert clusters (alerts $<30$~min apart merged) with no real reading $<70$~mg/dL within $\pm 10$~min; "
             r"and Parkes A+B reports participant-averaged proportions in Zones A and B using the Parkes Type 2 grid for CGMacros participants with type 2 diabetes and the Type 1 grid otherwise. (Descriptive 2- and 5-hour metrics appear in Supplementary Table~\ref{tab:hypoglycemia_events_supp}.)}"
         )
         lbl = r"\label{tab:hypoglycemia_events}"
@@ -842,6 +983,7 @@ def write_regime_tex(rows, out_path):
     ds_disp = {"weinstock": "Weinstock 2016", "cgmacros": "CGMacros"}
     reg_disp = {
         "STABLE": "Stable Euglycaemia",
+        "STABLE_OOR": "Stable Out-of-Range",
         "RISING": "Rising Excursion",
         "FALLING": "Falling Excursion",
         "HIGHVAR": "High Variability",
@@ -854,7 +996,7 @@ def write_regime_tex(rows, out_path):
         r"\scriptsize",
         r"\begin{tabular}{llccccc}",
         r"\toprule",
-        r"Dataset & Operational regime & $N$ & Timestep share (\%) & HBML RMSE (mg/dL) & Best expert (RMSE, mg/dL) & Top-selected expert (share, \%) \\",
+        r"Dataset & Operational regime & $N$ & Timestep share (\%) & HBML RMSE (mg/dL) & Best expert (RMSE, mg/dL) & Most frequent instantaneous winner (share, \%) \\",
         r"\midrule",
     ]
     prev_ds = None
@@ -873,8 +1015,8 @@ def write_regime_tex(rows, out_path):
         r"\bottomrule",
         r"\end{tabular}",
         r"\caption{\textbf{Forecasting accuracy and expert selection frequency across operational glycaemic regimes (30-minute horizon, full-history context).} "
-        r"Scored timesteps are partitioned into six mutually exclusive operational regimes in priority order. "
-        r"Columns report the number of participants $N$ contributing timesteps in each regime, the percentage of scored timesteps in each regime, cohort-mean participant-level RMSE for HBML and for the lowest-RMSE single expert in that regime, and the constituent expert achieving the lowest instantaneous squared error most frequently across timesteps in that regime.}",
+        r"Scored timesteps are partitioned into seven mutually exclusive operational regimes in priority order (slow-moving glucose outside 70--180~mg/dL is Stable Out-of-Range, not Stable Euglycaemia). "
+        r"Columns report the number of participants $N$ contributing timesteps in each regime, the percentage of scored timesteps in each regime, cohort-mean participant-level RMSE for HBML and for the lowest-RMSE single expert in that regime, and the most frequent instantaneous winner: the constituent expert with the lowest instantaneous squared error at the largest share of timesteps in that regime (a property of the experts, not of HBML's weights).}",
         r"\label{tab:regime_summary}",
         r"\end{table*}",
     ]

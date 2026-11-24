@@ -12,6 +12,7 @@ Regime taxonomy
 Regime                  | Short code | Primary criteria
 ------------------------|------------|-----------------------------------------
 Stable Euglycemia       | STABLE     | in-range glucose, low |slope|, low variance
+Stable Out-of-Range     | STABLE_OOR | none of the below, but glucose outside the range
 Rising Excursion        | RISING     | positive slope above threshold
 Falling Excursion       | FALLING    | negative slope below threshold
 High Variability        | HIGHVAR    | rolling variance above threshold
@@ -24,7 +25,8 @@ Priority order (applied top-to-bottom):
   2. Recovery Phase           – rebound signal
   3. High Variability         – local chaos overrides direction labels
   4. Rising / Falling         – directional excursions
-  5. Stable Euglycemia        – default when nothing else fires
+  5. Stable Euglycemia        – default when nothing else fires and glucose is in range;
+                                 otherwise Stable Out-of-Range
 
 Usage
 -----
@@ -83,6 +85,7 @@ REGIME_CODES = [
     "HIGHVAR",
     "RISING",
     "FALLING",
+    "STABLE_OOR",
     "STABLE",
 ]
 
@@ -193,6 +196,7 @@ def classify_regimes(features: pd.DataFrame, thresholds: dict) -> pd.Series:
 
     # --- Priority ordering ---
     regime = pd.Series("STABLE", index=features.index, dtype=str)
+    regime[~in_range] = "STABLE_OOR"   # stable but outside range is not euglycaemia
 
     # 5. Falling Excursion
     regime[s < t["slope_fall_thresh"]] = "FALLING"

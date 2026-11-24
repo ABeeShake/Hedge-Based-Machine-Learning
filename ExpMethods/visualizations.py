@@ -233,7 +233,9 @@ def plot_weights(weights, **kwargs):
     weights = weights / row_sums[:, np.newaxis]
 
     T = weights.shape[0]
-    t = np.arange(T)
+    # x axis: hours since the start of the record when the grid step is given, else slot index
+    step_min = kwargs.get("step_min", None)
+    t = np.arange(T) * (step_min / 60.0) if step_min else np.arange(T)
     
     # Filter only to known colors if we want to be strict, or cycle
     colors = []
@@ -249,11 +251,11 @@ def plot_weights(weights, **kwargs):
     # Stackplot
     ax.stackplot(t, weights.T, labels=names, colors=colors, alpha=0.8)
     
-    ax.set_xlim(0, T-1)
+    ax.set_xlim(t[0], t[-1])
     ax.set_ylim(0, 1)
-    ax.set_xlabel('Time Step ($t$)', fontsize=14)
-    ax.set_ylabel('Expert Weight ($w_{k,t}$)', fontsize=14)
-    ax.set_title('Evolution of Expert Weights', fontsize=16)
+    ax.set_xlabel(kwargs.get("xlabel", "Hours since start of record" if step_min else "Time step ($t$)"), fontsize=14)
+    ax.set_ylabel('Expert weight ($p_{k,t}$)', fontsize=14)
+    ax.set_title(kwargs.get("title", "Evolution of expert weights"), fontsize=16)
     ax.tick_params(axis='both', labelsize=12)
     
     # Legend outside

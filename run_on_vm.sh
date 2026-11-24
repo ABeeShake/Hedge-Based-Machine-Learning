@@ -62,6 +62,7 @@ echo "== 6 Clarke tables, subgroup tables, figures =="
 
 echo "== 6b Clinical hypoglycemia events, weight diagnostics, and regime tables =="
 "${PY}" evaluate_clinical_and_weights.py
+"${PY}" analyze_pool_mechanism.py --full-only || true   # leave-one-expert-out, fixed convex weights (review point 7)
 "${PY}" analyze_gamma_sensitivity.py || true
 if [ -f compute_regimes.py ] && [ -f analyze_regimes.py ] && [ -f plot_regime_analysis.py ]; then
     "${PY}" compute_regimes.py --cgmacros_dir ./cgmacros --weinstock_dir ./weinstock --out_dir ./Outputs/regimes
@@ -82,17 +83,7 @@ fi
 
 echo "== 7 timings, secondary analyses, and runtime environment =="
 "${PY}" summarize_engine_timings.py
-"${PY}" -c '
-import csv, platform, importlib
-rows = [("python", platform.python_version())]
-for pkg in ("numpy", "scipy", "pandas", "torch", "xgboost", "statsforecast", "neuralforecast", "torchdyn"):
-    try:
-        rows.append((pkg, getattr(importlib.import_module(pkg), "__version__", "unknown")))
-    except Exception:
-        pass
-with open("overleaf/tables/runtime_env.csv", "w", newline="") as f:
-    w = csv.writer(f); w.writerow(["package", "version"]); w.writerows(rows)
-'
+"${PY}" record_runtime_env.py    # package versions + CPU/GPU/RAM -> runtime_env.csv -> \EnvHardware
 [ -d Outputs/secondary/population ] && "${PY}" secondary_population_models.py --stage evaluate || echo "(no population-model outputs yet)"
 [ -d Outputs/secondary/cadence ] && "${PY}" secondary_retrain_cadence.py --stage evaluate || echo "(no refit-cadence outputs yet)"
 [ -d Outputs/secondary/seeds ] && "${PY}" secondary_seed_stability.py --stage evaluate || echo "(no seed-stability outputs yet)"

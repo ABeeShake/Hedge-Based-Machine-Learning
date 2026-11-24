@@ -311,15 +311,18 @@ def generate_macros(strict=False, quiet=False):
                               ("PairedDiffMeanHigh", "ci95_mean_high"), ("PairedDiffMedian", "paired_diff_median"),
                               ("PairedDiffMedianLow", "ci95_med_low"), ("PairedDiffMedianHigh", "ci95_med_high"),
                               ("HodgesLehmann", "hodges_lehmann"), ("HodgesLehmannLow", "hl_ci95_low"),
-                              ("HodgesLehmannHigh", "hl_ci95_high")]:
+                              ("HodgesLehmannHigh", "hl_ci95_high"), ("TOSTBootLow", "tost_boot_ci90_low"),
+                              ("TOSTBootHigh", "tost_boot_ci90_high")]:
                 v = f(col)
                 if v is not None:
                     M.add(f"{stem}{key}", f"{v:+.2f}")
             for pstem, pcol in [("TOSTWilcoxonP", "tost_wilcoxon_p"), ("TOSTTtestP", "tost_ttest_p"),
-                                ("TOSTRelFiveP", "tost_rel5_wilcoxon_p")]:
+                                ("TOSTBootP", "tost_boot_p"), ("TOSTRelFiveP", "tost_rel5_p")]:
                 pv = f(pcol)
                 if pv is not None:
-                    M.add(f"{pstem}{key}", tex_p(pv))
+                    # bootstrap p-values bottom out at 1/(B+1): report them as a bound
+                    boot_floor = pstem in ("TOSTBootP", "TOSTRelFiveP") and pv <= 1.0001e-4
+                    M.add(f"{pstem}{key}", r"\ensuremath{<10^{-4}}" if boot_floor else tex_p(pv))
             dm = f("paired_diff_mean")
             if dm is not None:
                 M.add(f"CmpSignDir{key}", "positive" if dm > 0 else ("zero" if abs(dm) < 5e-3 else "negative"))
@@ -353,6 +356,7 @@ def generate_macros(strict=False, quiet=False):
                     "pct_improved_min": "PctImprovedMin", "pct_improved_max": "PctImprovedMax",
                     "n_participants_min": "NParticipantsMin", "n_participants_max": "NParticipantsMax",
                     "n_shapiro_reject": "NShapiroReject", "n_boot": "NBoot", "fdr_q": "FDRq",
+                    "n_equiv_boot": "NEquivBoot", "n_equiv_boot_30min": "NEquivBootThirtyMin",
                     "n_equiv_wilcoxon": "NEquivWilcoxon", "n_equiv_ttest": "NEquivTtest",
                     "n_equiv_rel5": "NEquivRelFive", "n_configs_30min": "NConfigsThirtyMin",
                     "n_equiv_wilcoxon_30min": "NEquivWilcoxonThirtyMin",
@@ -865,12 +869,51 @@ def generate_macros(strict=False, quiet=False):
             M.num(f"HypoSweepPeakAboveChance{m_k}", ac, 1)
             M.add(f"HypoSweepPeakAboveChanceThresh{m_k}", t_raw)
 
+    M.section("Hypoglycaemia: sensitivity at matched false-alert rates (Weinstock, 30 min, full history)")
+    rows = read_rows("hypoglycemia_matched_far.csv")
+    if rows:
+        sources.append("hypoglycemia_matched_far.csv")
+        far_word = {0.25: "TwentyFive", 0.35: "ThirtyFive", 0.45: "FortyFive", 0.55: "FiftyFive",
+                    0.65: "SixtyFive", 0.75: "SeventyFive", 0.85: "EightyFive", 1.0: "Hundred"}
+        warn_word = {0: "Zero", 10: "Ten", 15: "Fifteen", 20: "Twenty"}
+        for r in rows:
+            far = round(float(r["false_alerts_per_day"]), 2)
+            w = int(float(r["min_warning_min"]))
+            if far not in far_word or w not in warn_word:
+                continue
+            key = f"{clean_name(r['model'])}Warn{warn_word[w]}Far{far_word[far]}"
+            M.num(f"HypoMatchedSens{key}", to_float(r.get("sensitivity_pct", "")), 1)
+            M.num(f"HypoMatchedSensLow{key}", to_float(r.get("ci95_low", "")), 1)
+            M.num(f"HypoMatchedSensHigh{key}", to_float(r.get("ci95_high", "")), 1)
+            d = to_float(r.get("diff_vs_reference_pp", ""))
+            if d is not None:
+                lo, hi = to_float(r.get("diff_ci95_low", "")), to_float(r.get("diff_ci95_high", ""))
+                M.add(f"HypoMatchedDiff{key}", f"{d:+.1f}")
+                if lo is not None and hi is not None:
+                    M.add(f"HypoMatchedDiffLow{key}", f"{lo:+.1f}")
+                    M.add(f"HypoMatchedDiffHigh{key}", f"{hi:+.1f}")
+                    # HBML relative to this comparator, for prose
+                    M.add(f"HypoMatchedCmp{key}", "higher than" if lo > 0 else ("lower than" if hi < 0
+                          else "not distinguishable from"))
+        npe = to_float(rows[0].get("n_participants_with_episodes", ""))
+        if npe is not None:
+            M.add("HypoMatchedNParticipantsWithEpisodes", int(npe))
+    else:   # not yet computed: visible placeholders keep the manuscript compiling
+        for m in ("HBML", "Persistence", "BestExpert"):
+            for ww in ("Zero", "Ten", "Fifteen", "Twenty"):
+                for ff in ("FortyFive", "SixtyFive", "EightyFive"):
+                    key = f"{m}Warn{ww}Far{ff}"
+                    for stem in ("Sens", "SensLow", "SensHigh", "Diff", "DiffLow", "DiffHigh", "Cmp"):
+                        M.add(f"HypoMatched{stem}{key}", "[pending]")
+        M.add("HypoMatchedNParticipantsWithEpisodes", "[pending]")
+
     M.section("Operational glycemic regime summary (30-min, full history)")
     rows = read_rows("regime_summary_table.csv")
     if rows:
         sources.append("regime_summary_table.csv")
         reg_map = {
             "STABLE": "Stable",
+            "STABLE_OOR": "StableOOR",
             "RISING": "Rising",
             "FALLING": "Falling",
             "HIGHVAR": "HighVar",
@@ -1006,6 +1049,14 @@ def generate_macros(strict=False, quiet=False):
                     ("neuralforecast", "Neuralforecast")):
         if pkg in env_map:
             M.add(f"Env{nm}Version", env_map[pkg])
+    if "cpu" in env_map:
+        hw = f"{env_map['cpu']} ({env_map.get('cpu_cores', '?')} cores, {env_map.get('ram_gb', '?')}~GB RAM"
+        gpu = env_map.get("gpu", "none")
+        hw += f"; GPU: {gpu})" if gpu and gpu != "none" else "; no GPU)"
+        hw += f", {env_map.get('os', '')}"
+        M.add("EnvHardware", hw.replace("_", "\\_").replace("%", "\\%"))
+    else:
+        M.add("EnvHardware", "[hardware not recorded: run record\\_runtime\\_env.py on the simulation machine]")
 
     # Macros used in the manuscript
     used = set()

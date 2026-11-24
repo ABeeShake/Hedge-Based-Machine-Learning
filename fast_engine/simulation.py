@@ -26,7 +26,7 @@ import pandas as pd
 
 from .models import build_experts
 
-ENGINE_VERSION = "2.2"
+ENGINE_VERSION = "2.3"
 
 
 def _defaults():
@@ -84,7 +84,7 @@ class FastRollingSimulation:
 
     def run_patient(self, X, verbose=False, log_interval=500):
         grid = self._as_grid(X)
-        y, valid = grid.inputs, grid.valid
+        y, valid, observed = grid.inputs, grid.valid, grid.observed
         T, h = len(grid), self.horizon
         origins = grid.origins(self.burn_in, h, self.min_segment_history, self.end_step)
         models = build_experts(self.experts, h, self.context_len, self.retrain_interval, self.seed)
@@ -94,11 +94,11 @@ class FastRollingSimulation:
         errors = {}
         t_start = time.perf_counter()
         for i, t in enumerate(origins):
-            hist, val = y[: t + 1], valid[: t + 1]
+            hist, val, obs = y[: t + 1], valid[: t + 1], observed[: t + 1]
             for n, m in models.items():
                 t0 = time.perf_counter()
                 try:
-                    p = m.forecast(hist, val)
+                    p = m.forecast(hist, val, obs)
                     if not np.isfinite(p):
                         raise FloatingPointError("non-finite forecast")
                 except Exception as e:  # keep the run alive; record and fall back to persistence
@@ -122,6 +122,14 @@ class FastRollingSimulation:
                               # per-step forecast cost excluding refits
                               forecast_s_mean=float((call_s[n] - fit.sum()) / max(n_steps, 1)),
                               n_fallback=int(n_fail[n]), first_error=errors.get(n))
+            log = getattr(m, "fit_log", [])
+            if log:
+                ntr = np.array([d["n_train"] for d in log], dtype=float)
+                timings[n].update(
+                    fit_windows_train_median=float(np.median(ntr)), fit_windows_train_min=int(ntr.min()),
+                    fit_windows_val_median=float(np.median([d["n_val"] for d in log])),
+                    n_fits_without_early_stopping=(int(sum(not d["early_stopping"] for d in log))
+                                                   if "steps" in log[0] else None))
         first = grid.first_origin(self.burn_in)
         all_obs = grid.observed[first:max(T - h, first)]
         grid_info = grid.summary() | dict(

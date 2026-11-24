@@ -1,3 +1,20 @@
+# Engine v2.3 (review of 20 Nov): what changed and what to re-run
+
+- **Training targets are real readings only.** `fast_engine.features.eligible_ends(..., observed=)` requires a real
+  reading at the h-step target; NODE and N-HITS trajectory losses are masked to real readings
+  (`features.target_mask`), so short-gap fills are inputs only. RunningMean averages real readings.
+- **Validation split never overlaps training targets.** `models.chronological_val_split` returns no validation set
+  (short fixed budget, no early stopping) instead of falling back to overlapping windows. Window counts per refit
+  are logged in the forecast metadata (`fit_windows_*`, `n_fits_without_early_stopping`).
+- `ENGINE_VERSION = "2.3"`: every forecast must be re-simulated (old files no longer count as complete).
+- Analysis-only changes (run on the new forecasts): bootstrap TOST on the mean (`calculate_statistics.py`),
+  hypoglycaemia episodes on the full observed trajectory with matched-false-alert comparisons and warning times
+  (`evaluate_clinical_and_weights.py` -> `hypoglycemia_matched_far.csv`), Stable Out-of-Range regime,
+  `analyze_pool_mechanism.py` (leave-one-expert-out, fixed convex weights), `record_runtime_env.py` (hardware).
+- To run the new analyses on the cached v2.2 forecasts before re-simulating:
+  `HBML_EVAL_ENGINE=2.2 python evaluate_clinical_and_weights.py --hypo-only` and
+  `HBML_EVAL_ENGINE=2.2 python analyze_pool_mechanism.py --full-only`.
+
 # Engine v2.1: re-running the study
 
 Engine v2 (`fast_engine/`) changes how the experts are trained and adds two experts:

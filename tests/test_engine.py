@@ -91,6 +91,9 @@ def test_chronological_val_split_and_protocol_constants():
     pool = np.arange(0, 300)
     tr, va = fm.chronological_val_split(pool, horizon=24)
     assert len(va) >= 5 and np.all(tr + 24 < va[0]), "train targets must stay strictly before validation origins"
+    # too little history for a non-overlapping split: no validation set, never overlapping targets
+    tr, va = fm.chronological_val_split(np.arange(0, 40), horizon=24)
+    assert len(va) == 0 and len(tr) == 40
     # Direct Parkes Type 1 & Type 2 sanity checks (Pfutzner et al. 2013)
     from evaluate_clinical_and_weights import parkes_error_grid_zone
     assert parkes_error_grid_zone(100.0, 105.0, 1) == "A"
@@ -112,6 +115,16 @@ def test_feature_causality():
     e = ft.eligible_ends(valid, 400, 24, need_path=True)
     assert all(valid[i:i + 25].all() for i in e) and 75 in e and 76 not in e and 150 in e
     assert len(Xt) == 400 - 24 + 1 and np.allclose(Yt, y[np.arange(377) + 24] - y[np.arange(377)])
+    # short-gap fills are never training targets
+    observed = np.ones(600, bool); observed[300:303] = False
+    e = ft.eligible_ends(None, 400, 24, observed=observed)
+    assert not np.any(np.isin(e + 24, [300, 301, 302])) and 275 in e and 276 not in e
+    e = ft.eligible_ends(valid, 400, 24, need_path=True, observed=observed)
+    assert np.all(observed[e + 24])
+    M = ft.target_mask(observed, np.array([290, 350]), 24)
+    assert M.shape == (2, 24) and M[0].sum() == 21 and M[1].all()
+    Xo, Yo = ft.xgb_training_set(y, 400, 24, observed=observed)
+    assert len(Xo) == len(Xt) - 3
     Xn, Yn, base = ft.neural_windows(y, np.array([100, 200]), 72, 6)
     assert Xn.shape == (2, 72) and Yn.shape == (2, 6) and np.allclose(Xn[:, -1], 0)
     assert np.allclose(Yn[0] * ft.NEURAL_SCALE + base[0], y[101:107])
@@ -234,7 +247,48 @@ def test_hypo_chance_and_threshold_sweep():
     assert r70["n_episodes"] == 1 and r70["n_detected"] == 0
     assert r75["n_episodes"] == 1 and r75["n_detected"] == 1
     assert r75["chance_detected_sum"] < 0.05
+    assert r75["n_detected_w0"] == 1 and r75["n_detected_w20"] == 1   # target 200 issued at 194: 30 min warning
+    pred2 = np.full(n, 140.0); pred2[200] = 65.0                         # issued at 194 -> 30 min before onset
+    r = ecw.evaluate_hypo_trajectory(y, pred2, mask, h=6, n_chance_shifts=0)
+    assert r["lead_times_det"] == [30.0] and r["n_detected_w20"] == 1
+    pred3 = np.full(n, 140.0); pred3[205] = 65.0                         # issued at 199 -> 5 min before onset
+    r = ecw.evaluate_hypo_trajectory(y, pred3, mask, h=6, n_chance_shifts=0)
+    assert r["n_detected_w0"] == 1 and r["n_detected_w10"] == 0
+    # episodes use every real reading (not just scored slots) and drop left-censored onsets
+    y2 = y.copy(); y2[300:306] = 60.0; y2[294:300] = np.nan             # onset inside a gap: censored
+    eps, cens = ecw.find_hypo_episodes(y2)
+    assert eps == [(200, 205)] and cens == 1
+    m2 = mask.copy(); m2[200:203] = False                                # unscored low readings still define onset
+    eps, _ = ecw.find_hypo_episodes(y)
+    assert eps == [(200, 205)]
+    r = ecw.evaluate_hypo_trajectory(y, pred3, m2, h=6, n_chance_shifts=0)
+    assert r["n_episodes"] == 1 and r["n_detected"] == 1
 
+
+def test_matched_far_bootstrap():
+    import evaluate_clinical_and_weights as ecw
+    rows = []
+    for m, base in (("HBML", 0.5), ("Persistence", 0.7)):
+        for thr, far in ((70, 0.2), (80, 0.6), (90, 1.2)):
+            for pid in range(20):
+                det = int(round(10 * min(1.0, base + 0.2 * (thr - 70) / 10)))
+                rows.append(dict(model=m, threshold_mgdl=thr, pid=f"{pid:03d}", n_episodes=10,
+                                 false_clusters=far * 10, days=10.0,
+                                 **{f"n_detected_w{w}": det for w in ecw.WARNING_MINUTES}))
+    out = ecw.matched_far_comparison(rows, far_targets=(0.1, 0.4), n_boot=50)
+    p = [r for r in out if r["model"] == "Persistence" and r["min_warning_min"] == 0]
+    assert np.isnan(p[0]["sensitivity_pct"]), "no extrapolation outside the swept range"
+    assert abs(p[1]["diff_vs_reference_pp"] - (-20.0)) < 1e-6
+
+
+
+def test_simplex_ls_fixed_weights():
+    from analyze_pool_mechanism import simplex_ls
+    rng = np.random.default_rng(0)
+    y = rng.normal(120, 30, 3000)
+    F = np.column_stack([y + rng.normal(0, 5, 3000), y + rng.normal(0, 10, 3000), y + 30.0])
+    w = simplex_ls(F, y)
+    assert abs(w.sum() - 1) < 1e-9 and np.all(w >= 0) and w[2] < 0.05 and w[0] > w[1]
 
 if __name__ == "__main__":
     for name, fn in list(globals().items()):

@@ -4,7 +4,10 @@ Common protocol (see ``BaseExpert``)
 -----------------------------------
 ``forecast(history, valid)`` receives the grid inputs up to the origin, ``y[0..t]`` (5-min slots;
 short gaps filled, long gaps bridged; see ExpMethods/timegrid.py) and the mask of slots outside long
-gaps, and returns the forecast of ``y[t+h]``. Training targets are drawn only from valid slots. Experts with parameters are (re)fitted on ``y[0..t]`` the first time
+gaps, the mask of slots holding a real reading, and returns the forecast of ``y[t+h]``. Training
+windows lie outside long gaps, and every training target is a real reading: the h-step end point
+must be observed and trajectory losses are masked to observed slots, so short-gap fills are used
+only as inputs. Experts with parameters are (re)fitted on ``y[0..t]`` the first time
 they are called (the end of the burn-in) and again every ``retrain_interval`` steps; between
 refits they only condition on new data. Nothing after ``t`` is ever used.
 
@@ -45,6 +48,8 @@ class BaseExpert:
         self.last_fit_t = None
         self.fit_seconds = []
         self.valid = None
+        self.observed = None
+        self.fit_log = []    # one dict per refit: window counts and whether early stopping ran
 
     def lookback(self, history):
         return history if self.context_len is None else history[-self.context_len:]
@@ -55,9 +60,10 @@ class BaseExpert:
     def predict(self, history):  # pragma: no cover - overridden
         raise NotImplementedError
 
-    def forecast(self, history, valid=None):
+    def forecast(self, history, valid=None, observed=None):
         history = np.asarray(history, dtype=float).ravel()
         self.valid = None if valid is None else np.asarray(valid, dtype=bool)[: len(history)]
+        self.observed = None if observed is None else np.asarray(observed, dtype=bool)[: len(history)]
         t = len(history) - 1
         if self.needs_fit and (self.last_fit_t is None or t - self.last_fit_t >= self.retrain_interval):
             t0 = time.perf_counter()
@@ -77,12 +83,13 @@ class Persistence(BaseExpert):
 
 
 class RunningMean(BaseExpert):
-    """y_hat(t+h) = mean of y(0..t) over slots outside long gaps (ignores context_len)."""
+    """y_hat(t+h) = mean of the real readings in y(0..t) (ignores context_len and gap fills)."""
     name = "RunningMean"
     needs_fit = False
 
     def predict(self, history):
-        return history.mean() if self.valid is None else history[self.valid].mean()
+        mask = self.observed if self.observed is not None else self.valid
+        return history.mean() if mask is None or not mask.any() else history[mask].mean()
 
 
 class StatsForecaster(BaseExpert):
@@ -131,7 +138,9 @@ class XGBoostExpert(BaseExpert):
 
     def fit(self, history):
         import xgboost as xgb
-        X, Y = ft.xgb_training_set(history, len(history) - 1, self.horizon, self.valid)
+        X, Y = ft.xgb_training_set(history, len(history) - 1, self.horizon, self.valid, self.observed)
+        self.fit_log.append(dict(t=len(history) - 1, n_train=0 if X is None else len(X), n_val=0,
+                                 early_stopping=False))
         self.booster = None if X is None or len(X) < 20 else xgb.train(
             self.params, xgb.DMatrix(X, label=Y), num_boost_round=self.n_estimators)
 
@@ -144,15 +153,30 @@ class XGBoostExpert(BaseExpert):
 
 
 def chronological_val_split(pool, horizon, min_train=16, min_val=5):
-    """Split sorted eligible end indices into chronological train and held-out validation pools."""
+    """Split sorted eligible end indices into chronological train and held-out validation pools.
+
+    The last 20% of windows (at least `min_val`) are held out. Training windows are restricted to
+    ends whose whole target path finishes strictly before the first validation origin
+    (e + horizon < val_ends[0]), so no training target overlaps a validation window. If fewer than
+    `min_train` such windows exist, no validation set is returned and the caller trains for a
+    short fixed budget without early stopping; targets are never allowed to overlap.
+    """
     pool = np.asarray(pool, dtype=int)
+    empty = np.zeros(0, dtype=int)
     if len(pool) < min_train + min_val:
-        return pool, np.zeros(0, dtype=int)
+        return pool, empty
     n_val = max(min_val, len(pool) // 5)
     val_ends = pool[-n_val:]
     strict_train = pool[pool + horizon < val_ends[0]]
-    train_ends = strict_train if len(strict_train) >= min_train else pool[:-n_val]
-    return train_ends, val_ends
+    if len(strict_train) < min_train:
+        return pool, empty
+    return strict_train, val_ends
+
+
+def _masked_mse(torch, pred, target, mask):
+    """Mean squared error over observed target slots only."""
+    m = mask.to(pred.dtype)
+    return ((pred - target) ** 2 * m).sum() / m.sum().clamp_min(1.0)
 
 
 def _fit_early_stopping(torch, net, opt, n_steps, val_loss_fn, step_fn,
@@ -166,6 +190,7 @@ def _fit_early_stopping(torch, net, opt, n_steps, val_loss_fn, step_fn,
         best_state = {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}
         stale = 0
     net.train()
+    step = 0
     for step in range(1, n_steps + 1):
         loss = step_fn()
         opt.zero_grad(set_to_none=True)
@@ -188,6 +213,7 @@ def _fit_early_stopping(torch, net, opt, n_steps, val_loss_fn, step_fn,
     if has_val:
         net.load_state_dict({k: v.to(next(net.parameters()).device) for k, v in best_state.items()})
     net.eval()
+    return step
 
 
 class NODEExpert(BaseExpert):
@@ -220,17 +246,20 @@ class NODEExpert(BaseExpert):
         s = torch.as_tensor(ends, dtype=torch.long, device=self.device)
         x0 = z[s].unsqueeze(-1)
         target = z[s[:, None] + offs]
+        mask = torch.as_tensor(ft.target_mask(self.observed, ends, self.horizon), device=self.device)
         traj = self.net(x0, self.t_span)[1]
-        return torch.nn.functional.mse_loss(traj[1:, :, 0].T, target)
+        return _masked_mse(torch, traj[1:, :, 0].T, target, mask)
 
     def fit(self, history):
         torch = self.torch
         t, h = len(history) - 1, self.horizon
-        pool = ft.eligible_ends(self.valid, t, h, need_path=True)
+        pool = ft.eligible_ends(self.valid, t, h, need_path=True, observed=self.observed)
         if len(pool) == 0:
+            self.fit_log.append(dict(t=t, n_train=0, n_val=0, early_stopping=False, steps=0))
             return
         train_ends, val_ends = chronological_val_split(pool, h)
-        ref = history if self.valid is None else history[self.valid]
+        mask = self.observed if self.observed is not None else self.valid
+        ref = history if mask is None else history[mask]
         self.mu, self.sd = float(ref.mean()), float(max(ref.std(), 1.0))
         z = torch.tensor((history - self.mu) / self.sd, dtype=torch.float32, device=self.device)
         n_steps = self.first_fit_steps if not self.fit_seconds else self.fit_steps
@@ -240,7 +269,9 @@ class NODEExpert(BaseExpert):
         val_sub = val_ends if len(val_ends) <= 256 else val_ends[-256:]
         val_fn = (lambda: float(self._traj_loss(z, val_sub, offs))) if len(val_ends) > 0 else None
         step_fn = lambda: self._traj_loss(z, self.rng.choice(train_ends, self.batch_size), offs)
-        _fit_early_stopping(torch, self.net, self.opt, n_steps, val_fn, step_fn)
+        steps = _fit_early_stopping(torch, self.net, self.opt, n_steps, val_fn, step_fn)
+        self.fit_log.append(dict(t=t, n_train=len(train_ends), n_val=len(val_ends),
+                                 early_stopping=len(val_ends) > 0, steps=steps))
 
     def predict(self, history):
         torch = self.torch
@@ -250,7 +281,7 @@ class NODEExpert(BaseExpert):
 
 
 class NHITSExpert(BaseExpert):
-    """N-HITS (NeuralForecast module) trained with Adam and L2 weight decay, gradient clipping, and
+    """N-HITS (NeuralForecast module) trained with Adam (coupled L2 weight decay), gradient clipping, and
     early stopping on the chronologically held-out final 20% of observed windows up to slot t.
     Warm-started at each refit. Input length = context_len (120 steps for full history)."""
     name = "NHITS"
@@ -281,8 +312,9 @@ class NHITSExpert(BaseExpert):
     def fit(self, history):
         torch = self.torch
         t, h = len(history) - 1, self.horizon
-        pool = ft.eligible_ends(self.valid, t, h, need_path=True)
+        pool = ft.eligible_ends(self.valid, t, h, need_path=True, observed=self.observed)
         if len(pool) == 0:
+            self.fit_log.append(dict(t=t, n_train=0, n_val=0, early_stopping=False, steps=0))
             return
         train_ends, val_ends = chronological_val_split(pool, h)
         n_steps = self.first_fit_steps if not self.fit_seconds else self.fit_steps
@@ -293,16 +325,19 @@ class NHITSExpert(BaseExpert):
             val_sub = val_ends if len(val_ends) <= 256 else val_ends[-256:]
             Xv, Yv, _ = ft.neural_windows(history, val_sub, self.input_size, h)
             Yv_t = torch.as_tensor(Yv, dtype=torch.float32, device=self.device)
-            val_fn = lambda: float(torch.nn.functional.mse_loss(self._run(Xv), Yv_t))
+            Mv_t = torch.as_tensor(ft.target_mask(self.observed, val_sub, h), device=self.device)
+            val_fn = lambda: float(_masked_mse(torch, self._run(Xv), Yv_t, Mv_t))
 
         def step_fn():
             ends = self.rng.choice(train_ends, self.batch_size)
             Xn, Yn, _ = ft.neural_windows(history, ends, self.input_size, h)
-            return torch.nn.functional.mse_loss(
-                self._run(Xn), torch.as_tensor(Yn, dtype=torch.float32, device=self.device)
-            )
+            M = torch.as_tensor(ft.target_mask(self.observed, ends, h), device=self.device)
+            return _masked_mse(torch, self._run(Xn),
+                               torch.as_tensor(Yn, dtype=torch.float32, device=self.device), M)
 
-        _fit_early_stopping(torch, self.net, self.opt, n_steps, val_fn, step_fn)
+        steps = _fit_early_stopping(torch, self.net, self.opt, n_steps, val_fn, step_fn)
+        self.fit_log.append(dict(t=t, n_train=len(train_ends), n_val=len(val_ends),
+                                 early_stopping=len(val_ends) > 0, steps=steps))
 
     def predict(self, history):
         Xn, base = ft.neural_windows(history, np.array([len(history) - 1]), self.input_size)

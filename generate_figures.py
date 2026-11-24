@@ -962,7 +962,8 @@ if __name__ == "__main__":
                                      start=GlobalValues.burn_in_steps, horizon=60, return_weights=True)
             methods_dir = os.path.join(IMAGES_DIR, "methods")
             os.makedirs(methods_dir, exist_ok=True)
-            viz.plot_weights(W, names=_exp_cols_110, show=False, save=True, path=f"{methods_dir}/expert_weights_plot.pdf")
+            viz.plot_weights(W, names=_exp_cols_110, show=False, save=True, path=f"{methods_dir}/expert_weights_plot.pdf",
+                             step_min=5.0, title=f"Weinstock participant 110, 5-h horizon, full history ({PRIMARY_HBML})")
 
             # --- Rolling RMSE Plot ---
             try:

@@ -3,7 +3,10 @@
 Every builder takes the series ``y`` (the 5-minute grid inputs, no NaN) and the indices ``ends``
 of the last observation available to a forecast; nothing after ``ends`` is ever read.
 ``valid`` (optional) marks slots outside long gaps; training samples whose target window touches
-a long gap are dropped (see ``eligible_ends``). Kept free of torch /
+a long gap are dropped (see ``eligible_ends``). ``observed`` (optional) marks slots holding a real
+CGM reading: a training target is always a real reading, never a short-gap fill (the h-step end
+point must be observed, and path losses are masked to observed slots; see ``target_mask``).
+Kept free of torch /
 xgboost imports so it can be unit-tested anywhere.
 """
 import numpy as np
@@ -35,15 +38,20 @@ def xgb_features(y, ends):
     return np.column_stack(cols)
 
 
-def eligible_ends(valid, t, h, need_path=False):
+def eligible_ends(valid, t, h, need_path=False, observed=None):
     """Training end points e in [0, t-h] whose target is known by time t and not inside a long gap.
 
     need_path=False: valid[e] and valid[e+h]   (direct h-step target, XGBoost)
     need_path=True : valid[e .. e+h] all       (whole trajectory is a target, N-HITS / NODE)
+    observed (optional): additionally require a real reading at the h-step target e+h, so that
+    short-gap fills are never used as training targets (they remain usable as inputs).
     """
     if t - h < 0:
         return np.zeros(0, dtype=int)
     ends = np.arange(0, t - h + 1)
+    if observed is not None:
+        o = np.asarray(observed, dtype=bool)[: t + 1]
+        ends = ends[o[ends + h]]
     if valid is None:
         return ends
     v = np.asarray(valid, dtype=bool)[: t + 1]
@@ -53,9 +61,18 @@ def eligible_ends(valid, t, h, need_path=False):
     return ends[bad[ends + h + 1] - bad[ends] == 0]
 
 
-def xgb_training_set(y, t, h, valid=None):
-    """Rows with end e in eligible_ends(valid, t, h); target = y[e+h] - y[e]."""
-    ends = eligible_ends(valid, t, h)
+def target_mask(observed, ends, h):
+    """(len(ends), h) boolean mask of real readings at e+1 .. e+h (all True if observed is None)."""
+    ends = np.asarray(ends, dtype=int)
+    if observed is None:
+        return np.ones((len(ends), h), dtype=bool)
+    o = np.asarray(observed, dtype=bool)
+    return o[ends[:, None] + np.arange(1, h + 1)[None, :]]
+
+
+def xgb_training_set(y, t, h, valid=None, observed=None):
+    """Rows with end e in eligible_ends(valid, t, h, observed=observed); target = y[e+h] - y[e]."""
+    ends = eligible_ends(valid, t, h, observed=observed)
     if len(ends) == 0:
         return None, None
     y = np.asarray(y, dtype=float)

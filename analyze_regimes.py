@@ -79,7 +79,7 @@ def classify_ceg_zone(r: float, p: float) -> str:
 
 
 CEG_ZONES   = ["A", "B", "C", "D1", "D2", "E1", "E2"]
-REGIME_CODES = ["HYPO_TRANS", "RECOVERY", "HIGHVAR", "RISING", "FALLING", "STABLE"]
+REGIME_CODES = ["HYPO_TRANS", "RECOVERY", "HIGHVAR", "RISING", "FALLING", "STABLE_OOR", "STABLE"]
 
 
 # ---------------------------------------------------------------------------

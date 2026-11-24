@@ -1203,7 +1203,8 @@ def scale_free_hedge_sd_forecast(forecasts, losses, **kwargs):
     (≈ 1/gamma with constant losses), preventing the permanent weight
     concentration that makes SFHDF rigid at long horizons.
 
-    When gamma → 0 this reduces to vanilla Scale-Free Hedge (SFH).
+    When gamma = 0 the EMA scale never leaves its 1e-8 floor, so the rule is effectively
+    Follow-the-Leader (not vanilla Scale-Free Hedge, whose scale is the running maximum).
     When gamma = 1 the algorithm is fully forgetful (single-step ratio).
 
     Kwargs
@@ -1281,7 +1282,7 @@ def scale_free_hedge_sd_forecast(forecasts, losses, **kwargs):
 
 
 # Gamma grid used by the two-layer meta-hedge.
-# Includes gamma=0.0 (= vanilla SFH) through fully-forgetful gamma=1.0.
+# Includes gamma=0.0 (EMA scale stuck at its floor: effectively Follow-the-Leader) through fully-forgetful gamma=1.0.
 SFH_META_GAMMA_GRID = [0.0, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0]
 
 
@@ -1289,7 +1290,7 @@ def scale_free_hedge_meta_forecast(forecasts, losses, **kwargs):
     """Two-layer Scale-Free Hedge meta-learner (SFH-Meta).
 
     **Layer 1** runs :func:`scale_free_hedge_df_forecast` for each gamma
-    in ``gamma_grid`` (``gamma=0.0`` is equivalent to vanilla SFH) and
+    in ``gamma_grid`` (``gamma=0.0`` is effectively Follow-the-Leader) and
     collects the per-gamma T-length forecast arrays and their realized
     squared-error losses against the ground truth.
 
