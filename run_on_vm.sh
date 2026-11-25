@@ -88,6 +88,8 @@ echo "== 7 timings, secondary analyses, and runtime environment =="
 [ -d Outputs/secondary/cadence ] && "${PY}" secondary_retrain_cadence.py --stage evaluate || echo "(no refit-cadence outputs yet)"
 [ -d Outputs/secondary/seeds ] && "${PY}" secondary_seed_stability.py --stage evaluate || echo "(no seed-stability outputs yet)"
 
+"${PY}" plot_main_figures.py   # main-text figures replacing the dense results tables
+
 echo "== 8 macros =="
 "${PY}" generate_results_macros.py
 "${PY}" check_macros.py || echo ">>> check_macros.py reported problems (see above). Fix them before submitting."

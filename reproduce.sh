@@ -87,6 +87,7 @@ python3 calculate_statistics.py || true
 python3 calculate_baselines.py || true
 python3 evaluate_clinical_and_weights.py || true
 python3 analyze_pool_mechanism.py --full-only || true
+python3 plot_main_figures.py || true
 python3 record_runtime_env.py || true
 python3 generate_figures.py || true
 python3 plot_and_format_volatility.py || true
