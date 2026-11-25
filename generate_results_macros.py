@@ -36,6 +36,7 @@ A macro that the manuscript uses but that could not be computed is defined as
 import argparse
 import csv
 import datetime
+import math
 import os
 import re
 import sys
@@ -50,10 +51,10 @@ CTX_NAME = dict(CONTEXTS)
 CTX_TEXT = {"6": "6-hour", "12": "12-hour", "24": "24-hour", "full": "full-history"}
 STATUS_NAME = {"non-T2D": "NoDiabetes", "pre-T2D": "Prediabetes", "T2D": "TypeTwo"}
 MACRO_PREFIXES = ("RMSE", "AbsRMSE", "Oracle", "CEG", "Wilcoxon", "Ttest", "PctImproved", "PctWorse", "NImproved", "NWorse", "NTotal",
-                  "PairedDiff", "BestExpert", "StatAll", "StatWeinstock", "StatCgmacros", "StatCGMacros",
+                  "PairedDiff", "BestExpert", "StatAll", "StatWeinstock", "StatCGMacros", "StatCgmacros",
                   "Baseline", "Vol[A-Z]", "Timing", "NWeinstock", "NCgmacros", "NCGMacros", "NConfigs", "NTotalParticipants",
                   "NParticipantConfigs", "NSecondarySubset", "NMinScored", "NExcluded", "Ablation", "GammaSens", "NExpertsWinning",
-                  "TopWinner", "SecondWinner", "Pop[A-Z]", "Cadence", "Grid", "Weight", "PoolSeven", "Clipped", "Hypo",
+                  "TopWinner", "SecondWinner", "Pop[A-Z]", "Cadence", "Grid", "Weight", "PoolSeven", "PoolMech", "Clipped", "Hypo",
                   "Regime", "Seed", "HodgesLehmann", "TOST", "Equiv", "Cmp", "WeightedRMSE", "PooledRMSE", "Env")
 
 
@@ -67,7 +68,8 @@ def strip_latex(val):
 
 def to_float(val):
     try:
-        return float(strip_latex(val))
+        x = float(strip_latex(val))
+        return x if math.isfinite(x) else None
     except (TypeError, ValueError):
         return None
 
@@ -819,13 +821,22 @@ def generate_macros(strict=False, quiet=False):
             m_k = clean_name(r["model"])
             key = f"{m_k}{ds_k}{hz_k}"
             M.add(f"HypoEpisodes{ds_k}{hz_k}", r.get("n_episodes", ""))
+            M.add(f"HypoParticipantsWithEpisodes{ds_k}{hz_k}", r.get("n_participants_with_episodes", ""))
+            M.add(f"HypoLeftCensored{ds_k}{hz_k}", r.get("n_episodes_left_censored", ""))
+            M.add(f"HypoNotEvaluable{ds_k}{hz_k}", r.get("n_episodes_not_evaluable", ""))
             M.add(f"HypoDetected{key}", r.get("n_detected", ""))
             M.num(f"HypoEpSens{key}", to_float(r.get("episode_sensitivity_pct", "")), 1)
+            M.num(f"HypoEpSensWarnTen{key}", to_float(r.get("sensitivity_warn10min_pct", "")), 1)
+            M.num(f"HypoEpSensWarnFifteen{key}", to_float(r.get("sensitivity_warn15min_pct", "")), 1)
+            M.num(f"HypoEpSensWarnTwenty{key}", to_float(r.get("sensitivity_warn20min_pct", "")), 1)
             M.num(f"HypoEpSensAny{key}", to_float(r.get("episode_sensitivity_any_pct", r.get("episode_sensitivity_pct", ""))), 1)
             if "chance_sensitivity_pct" in r:
                 M.num(f"HypoChanceSens{key}", to_float(r.get("chance_sensitivity_pct", "")), 1)
             if "above_chance_pp" in r:
-                M.num(f"HypoAboveChance{key}", to_float(r.get("above_chance_pp", "")), 1)
+                ac_v = to_float(r.get("above_chance_pp", ""))
+                M.num(f"HypoAboveChance{key}", ac_v, 1)
+                if ac_v is not None:
+                    M.add(f"HypoAboveChanceSigned{key}", "+0.0" if abs(round(ac_v, 1)) < 1e-9 else f"{ac_v:+.1f}")
             M.num(f"HypoLeadTime{key}", to_float(r.get("mean_lead_time_min", "")), 1)
             M.num(f"HypoLeadTimeDet{key}", to_float(r.get("mean_lead_time_detected_min", r.get("mean_lead_time_min", ""))), 1)
             M.num(f"HypoPointSens{key}", to_float(r.get("point_sensitivity_pct", "")), 1)
@@ -898,6 +909,81 @@ def generate_macros(strict=False, quiet=False):
         npe = to_float(rows[0].get("n_participants_with_episodes", ""))
         if npe is not None:
             M.add("HypoMatchedNParticipantsWithEpisodes", int(npe))
+
+    M.section("Pool mechanism: leave-one-expert-out, no-reference pool, and CV fixed weights")
+    pm_rows = read_rows("pool_mechanism_summary.csv")
+    if pm_rows:
+        sources.append("pool_mechanism_summary.csv")
+        pm_cells = {}
+        pm_ns = {}
+        for r in pm_rows:
+            if str(r.get("context", "")).strip().lower() != "full":
+                continue
+            ds_k = dataset_label(r["dataset"])
+            hz_k = horizon_label(r["horizon"])
+            var = clean_name(r["variant"])
+            key = f"{ds_k}{hz_k}{var}"
+            mr = to_float(r.get("mean_rmse", ""))
+            df = to_float(r.get("diff_vs_hbml", ""))
+            lo = to_float(r.get("diff_ci95_low", ""))
+            hi = to_float(r.get("diff_ci95_high", ""))
+            M.num(f"PoolMechRMSE{key}", mr, 2)
+            if df is not None:
+                M.add(f"PoolMechDiff{key}", "+0.00" if abs(round(df, 2)) < 1e-9 else f"{df:+.2f}")
+            if lo is not None:
+                M.add(f"PoolMechDiffLow{key}", "+0.00" if abs(round(lo, 2)) < 1e-9 else f"{lo:+.2f}")
+            if hi is not None:
+                M.add(f"PoolMechDiffHigh{key}", "+0.00" if abs(round(hi, 2)) < 1e-9 else f"{hi:+.2f}")
+            pm_cells[(r["dataset"], hz_k, r["variant"])] = (mr, df, lo, hi)
+            pm_ns[(r["dataset"], hz_k)] = r.get("n", "")
+        var_order = [
+            ("HBML", r"\texttt{HBML} (primary 7-expert pool)"),
+            ("Uniform", r"Uniform ensemble ($p_k = 1/7$)"),
+            ("FixedConvex-CV", r"Fixed convex weights (5-fold CV)"),
+            ("HBML-no-reference", r"\texttt{HBML} without Persistence \& RunningMean"),
+            ("HBML-minus-ARIMA", r"\texttt{HBML} minus \texttt{ARIMA}"),
+            ("HBML-minus-ETS", r"\texttt{HBML} minus \texttt{ETS}"),
+            ("HBML-minus-NHITS", r"\texttt{HBML} minus \texttt{N-HITS}"),
+            ("HBML-minus-NODE", r"\texttt{HBML} minus \texttt{NODE}"),
+            ("HBML-minus-XGBoost", r"\texttt{HBML} minus \texttt{XGBoost}"),
+            ("HBML-minus-Persistence", r"\texttt{HBML} minus \texttt{Persistence}"),
+            ("HBML-minus-RunningMean", r"\texttt{HBML} minus \texttt{RunningMean}"),
+        ]
+        pm_lines = [
+            r"\begin{table*}[t]",
+            r"\centering",
+            r"\scriptsize",
+            r"\resizebox{\linewidth}{!}{%",
+            r"\begin{tabular}{llccc}",
+            r"\toprule",
+            r"Dataset & Pool / weighting variant & 0.5 hr RMSE ($\Delta$, 95\% CI) & 2 hr RMSE ($\Delta$, 95\% CI) & 5 hr RMSE ($\Delta$, 95\% CI) \\",
+            r"\midrule",
+        ]
+        for ds_idx, (ds_raw, ds_disp) in enumerate([("weinstock", "Weinstock 2016"), ("cgmacros", "CGMacros")]):
+            if ds_idx > 0:
+                pm_lines.append(r"\midrule")
+            for vraw, vdisp in var_order:
+                cells = []
+                for hz_k in ("ThirtyMin", "TwoHour", "FiveHour"):
+                    val = pm_cells.get((ds_raw, hz_k, vraw))
+                    if not val or val[0] is None:
+                        cells.append("---")
+                    elif vraw == "HBML":
+                        cells.append(f"{val[0]:.2f}")
+                    else:
+                        mr, df, lo, hi = val
+                        cells.append(f"{mr:.2f} ({df:+.2f} [{lo:+.2f}, {hi:+.2f}])")
+                pm_lines.append(f"{ds_disp} & {vdisp} & " + " & ".join(cells) + r" \\")
+        pm_lines += [
+            r"\bottomrule",
+            r"\end{tabular}%",
+            r"}",
+            r"\caption{\textbf{Pool mechanism diagnostics on cached engine v2.3 full-history forecasts: leave-one-expert-out ablations, reference-free pool, uniform ensemble, and 5-fold cross-validated fixed convex weights.} Cohort-mean RMSE (mg/dL) and paired cohort-mean difference relative to primary \texttt{HBML} (positive values indicate higher RMSE than \texttt{HBML}; negative values indicate lower RMSE), with 5{,}000-resample participant-level bootstrap 95\% confidence intervals.}",
+            r"\label{tab:pool_mechanism}",
+            r"\end{table*}",
+        ]
+        with open(os.path.join(TABLES_DIR, "table_pool_mechanism.tex"), "w", encoding="utf-8") as f:
+            f.write("\n".join(pm_lines) + "\n")
     else:   # not yet computed: visible placeholders keep the manuscript compiling
         for m in ("HBML", "Persistence", "BestExpert"):
             for ww in ("Zero", "Ten", "Fifteen", "Twenty"):
@@ -1060,7 +1146,7 @@ def generate_macros(strict=False, quiet=False):
 
     # Macros used in the manuscript
     used = set()
-    tex_files = [os.path.join(SECTIONS_DIR, f) for f in ("introduction.tex", "results.tex", "discussion.tex", "methods.tex")]
+    tex_files = [os.path.join(SECTIONS_DIR, f) for f in ("introduction.tex", "results.tex", "discussion.tex", "methods.tex", "supplement.tex")]
     tex_files.append(os.path.join(BASE_DIR, "overleaf", "main.tex"))
     pat = re.compile(r"\\((?:" + "|".join(MACRO_PREFIXES) + r")[A-Za-z]*)")
     for p in tex_files:

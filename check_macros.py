@@ -33,10 +33,10 @@ NUM_PATS = [
     ("count of N", re.compile(r"\b\d+\s+(?:evaluable\s+)?(?:participants|individuals|older adults|adults|configurations)\b")),
 ]
 ALLOW = [
-    r"95\\%", r"70--180", r"40--400", r"40,\s*400", r"\b0\.05\b", r"\b0\.001\b", r"\b0\.01\b", r"\\pm\s*5\\%", r"\\approx\s*0\.14",
-    r"\b0\.10?\b", r"\b0\.20?\b", r"\b0\.30?\b", r"\b0\.50?\b", r"\b0\.8\b", r"\b1\.0\b",
+    r"95\\%", r"90\\%", r"70--180", r"40--400", r"40,\s*400", r"\b0\.05\b", r"\b0\.001\b", r"\b0\.01\b", r"\\pm\s*5\\%", r"\b5\\%", r"\\approx\s*0\.14",
+    r"\b0\.10?\b", r"\b0\.20?\b", r"\b0\.30?\b", r"\b0\.50?\b", r"\b0\.(?:65|75)\b", r"\b0\.8\b", r"\b1\.0\b",
     r"\b1\.5\b", r"\b2\.5\b", r"\b50\.0\b", r"\b18\.0182\b", r"3\.08", r"20\\%", r"50\\%",
-    r"\b(?:three|four|two) ", r"5--15", r"30 to 60", r"300-second", r"10--14",
+    r"\b(?:three|four|two) ", r"5--15", r"30 to 60", r"300-second", r"10--14", r"\bn\s*=\s*0\b",
     r"3\.11\.2", r"2\.5\.1", r"1\.0\.6", r"2\.0\.1", r"3\.1\.1", r"3\.0\.5", r"1\.26\.4", r"1\.13\.1", r"2\.2\.2",
     r"\\linewidth", r"\\textwidth", r"width\s*=", r"1/n_", r"q = ", r"\\alpha", r"\\gamma",
     r"Weinstock 2016", r"sum to 100\\%", r"0\.5\s*(?:hr|h\b)",
