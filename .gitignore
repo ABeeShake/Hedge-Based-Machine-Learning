@@ -85,3 +85,4 @@ slurm_logs/
 HBMLAudit.html
 Outputs_v*/
 Outputs_archive/
+Outputs_loss/
