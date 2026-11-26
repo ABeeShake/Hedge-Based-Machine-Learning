@@ -16,7 +16,7 @@
 
 set -euo pipefail
 mkdir -p slurm_logs
-cd "$SLURM_SUBMIT_DIR"
+cd "${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 PY="./hedge-env/bin/python3"
 [ -x "$PY" ] || PY="python3"

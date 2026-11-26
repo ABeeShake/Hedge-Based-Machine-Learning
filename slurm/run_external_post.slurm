@@ -9,7 +9,7 @@
 
 set -euo pipefail
 mkdir -p slurm_logs
-cd "$SLURM_SUBMIT_DIR"
+cd "${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 PY="./hedge-env/bin/python3"
 [ -x "$PY" ] || PY="python3"
@@ -26,5 +26,9 @@ echo "=== [1/2] Post-processing $DATASET conditions ==="
 
 echo "=== [2/2] Running self-contained external cohort report for $DATASET ==="
 "$PY" evaluate_external_cohort.py --dataset "$DATASET"
+
+mkdir -p "external_results/${DATASET}"
+mv Outputs/external/"${DATASET}"/* "external_results/${DATASET}/"
+echo "Moved external cohort results to external_results/${DATASET}/"
 
 echo "=== Finished $DATASET external evaluation at $(date) ==="
