@@ -928,8 +928,12 @@ def main():
 def write_hypo_tex(rows, out_path, supplement=False):
     ds_disp = {"weinstock": "Weinstock 2016", "cgmacros": "CGMacros"}
     has_chance = bool(rows) and ("chance_sensitivity_pct" in rows[0])
-    cols_spec = "lllccccccccccc" if has_chance else "lllccccccccc"
+    has_cluster = bool(rows) and ("cluster_ppv_pct" in rows[0])
+    n_num_cols = 9 + (2 if has_chance else 0) + (2 if has_cluster else 0)
+    cols_spec = "lll" + ("c" * n_num_cols)
     chance_hdr = " & Chance sens.\\ (\\%) & Above chance (pp)" if has_chance else ""
+    cluster_hdr = " & Cluster PPV (\\%)" if has_cluster else ""
+    cal_hdr = " & FAR / cal.\\ day" if has_cluster else ""
     lines = [
         r"\begin{table*}[t]",
         r"\centering",
@@ -937,7 +941,7 @@ def write_hypo_tex(rows, out_path, supplement=False):
         r"\resizebox{\linewidth}{!}{%",
         f"\\begin{{tabular}}{{{cols_spec}}}",
         r"\toprule",
-        f"Dataset & Horizon & Model & $N$ & Episodes & Pre-onset sens.\\ (\\%){chance_hdr} & Lead (all, min) & Lead (det., min) & Point PPV (\\%) & Point $F_1$ (\\%) & False alerts / day & Parkes A+B (\\%) \\\\",
+        f"Dataset & Horizon & Model & $N$ & Episodes & Pre-onset sens.\\ (\\%){chance_hdr} & Lead (all, min) & Lead (det., min) & Point PPV (\\%) & Point $F_1$ (\\%){cluster_hdr} & False alerts / day{cal_hdr} & Parkes A+B (\\%) \\\\",
         r"\midrule",
     ]
     prev_ds = None
@@ -965,12 +969,15 @@ def write_hypo_tex(rows, out_path, supplement=False):
                 return "+0.0"
             return f"{fv:+.1f}"
         ch_cells = f" & {_fmt1(r.get('chance_sensitivity_pct'))} & {_fmts1(r.get('above_chance_pp'))}" if has_chance else ""
+        cl_cell = f" & {_fmt1(r.get('cluster_ppv_pct'))}" if has_cluster else ""
+        cal_val = r.get("false_alerts_per_calendar_day")
+        cal_cell = (f" & {float(cal_val):.2f}" if (has_cluster and cal_val not in (None, "")) else (" & ---" if has_cluster else ""))
         lines.append(
             f"{ds} & {r['horizon']} hr & {m} & {r['n_participants']} & {r['n_episodes']} & "
             f"{_fmt1(r['episode_sensitivity_pct'])}{ch_cells} & {_fmt1(r['mean_lead_time_min'])} & "
             f"{_fmt1(r['mean_lead_time_detected_min'])} & "
-            f"{_fmt1(r['point_ppv_pct'])} & {_fmt1(r['point_f1_pct'])} & "
-            f"{float(r['false_alerts_per_day']):.2f} & {_fmt1(r['parkes_ab_pct'])} \\\\"
+            f"{_fmt1(r['point_ppv_pct'])} & {_fmt1(r['point_f1_pct'])}{cl_cell} & "
+            f"{float(r['false_alerts_per_day']):.2f}{cal_cell} & {_fmt1(r['parkes_ab_pct'])} \\\\"
         )
     if supplement:
         cap = (
@@ -987,7 +994,7 @@ def write_hypo_tex(rows, out_path, supplement=False):
             r"Pre-onset episode sensitivity counts episodes detected (one-to-one, by the earliest alert) by a forecast below 70~mg/dL issued strictly before onset ($t_{\text{issue}} = t - h < t_{\text{start}}$). "
             + (r"``Chance sens.'' and ``Above chance'' report expected pre-onset sensitivity under circular time-shifted alerts within each participant and the net gain over chance in percentage points. " if has_chance else "")
             + r"``Lead (all, min)'' reports the unconditional mean warning time prior to episode onset across all episodes (counting missed episodes as $0$~min), whereas ``Lead (det., min)'' averages over detected episodes. "
-            r"Point PPV and $F_1$ evaluate timestep-level hypoglycaemia classification; false alerts per scored participant-day count alert clusters (alerts $<30$~min apart merged) with no real reading $<70$~mg/dL within $\pm 10$~min; "
+            r"Point PPV and $F_1$ evaluate timestep-level hypoglycaemia classification; Cluster PPV reports the percentage of 30-min merged alert clusters coinciding with a real reading $<70$~mg/dL within $\pm 10$~min; false alerts per scored participant-day (and per elapsed calendar day, FAR / cal.\ day) count uncorroborated alert clusters; "
             r"and Parkes A+B reports participant-averaged proportions in Zones A and B using the Parkes Type 2 grid for CGMacros participants with type 2 diabetes and the Type 1 grid otherwise. (Descriptive 2- and 5-hour metrics appear in Supplementary Table~\ref{tab:hypoglycemia_events_supp}.)}"
         )
         lbl = r"\label{tab:hypoglycemia_events}"

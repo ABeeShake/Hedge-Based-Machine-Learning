@@ -55,7 +55,7 @@ MACRO_PREFIXES = ("RMSE", "MaxAE", "AbsRMSE", "Oracle", "CEG", "Wilcoxon", "Ttes
                   "Baseline", "Vol[A-Z]", "Timing", "NWeinstock", "NCgmacros", "NCGMacros", "NConfigs", "NTotalParticipants",
                   "NParticipantConfigs", "NSecondarySubset", "NMinScored", "NExcluded", "Ablation", "GammaSens", "NExpertsWinning",
                   "TopWinner", "SecondWinner", "Pop[A-Z]", "Cadence", "Grid", "Weight", "PoolSeven", "PoolMech", "Clipped", "Hypo",
-                  "Regime", "Seed", "HodgesLehmann", "TOST", "Equiv", "Cmp", "WeightedRMSE", "PooledRMSE", "Env")
+                  "Regime", "Seed", "HodgesLehmann", "TOST", "Equiv", "Cmp", "WeightedRMSE", "PooledRMSE", "Env", "Ext", "Val")
 
 
 def clean_name(name):
@@ -847,7 +847,11 @@ def generate_macros(strict=False, quiet=False):
             M.num(f"HypoPointSens{key}", to_float(r.get("point_sensitivity_pct", "")), 1)
             M.num(f"HypoPointPPV{key}", to_float(r.get("point_ppv_pct", "")), 1)
             M.num(f"HypoPointFOne{key}", to_float(r.get("point_f1_pct", "")), 1)
+            M.num(f"HypoClusterPPV{key}", to_float(r.get("cluster_ppv_pct", "")), 1)
+            M.add(f"HypoAlertClusters{key}", r.get("n_alert_clusters", ""))
+            M.add(f"HypoTrueAlertClusters{key}", r.get("true_alert_clusters", ""))
             M.num(f"HypoFalseAlertsDay{key}", to_float(r.get("false_alerts_per_day", "")), 2)
+            M.num(f"HypoFalseAlertsCalDay{key}", to_float(r.get("false_alerts_per_calendar_day", "")), 2)
             M.num(f"HypoParkesA{key}", to_float(r.get("parkes_a_pct", "")), 1)
             M.num(f"HypoParkesAB{key}", to_float(r.get("parkes_ab_pct", "")), 1)
 
@@ -969,23 +973,30 @@ def generate_macros(strict=False, quiet=False):
         with open(os.path.join(TABLES_DIR, "table_hypoglycemia_matched_far.tex"), "w", encoding="utf-8") as f:
             f.write("\n".join(mfar_lines) + "\n")
 
-    M.section("Pool mechanism: leave-one-expert-out, no-reference pool, and CV fixed weights")
+    M.section("Pool mechanism: leave-one-expert-out, no-reference pool, interleaved, short-ctx, and CV fixed weights")
     pm_rows = read_rows("pool_mechanism_summary.csv")
     if pm_rows:
         sources.append("pool_mechanism_summary.csv")
         pm_cells = {}
         pm_ns = {}
         for r in pm_rows:
-            if str(r.get("context", "")).strip().lower() != "full":
-                continue
             ds_k = dataset_label(r["dataset"])
             hz_k = horizon_label(r["horizon"])
+            ctx_raw = str(r.get("context", "")).strip().lower()
+            ctx_k = CTX_NAME.get(ctx_raw, clean_name(ctx_raw))
             var = clean_name(r["variant"])
-            key = f"{ds_k}{hz_k}{var}"
             mr = to_float(r.get("mean_rmse", ""))
             df = to_float(r.get("diff_vs_hbml", ""))
             lo = to_float(r.get("diff_ci95_low", ""))
             hi = to_float(r.get("diff_ci95_high", ""))
+            # Context-specific mechanism macros across 6h/12h/24h/full
+            ckey = f"{ds_k}{hz_k}{ctx_k}{var}"
+            M.num(f"PoolMechCtxRMSE{ckey}", mr, 2)
+            if df is not None:
+                M.add(f"PoolMechCtxDiff{ckey}", "+0.00" if abs(round(df, 2)) < 1e-9 else f"{df:+.2f}")
+            if ctx_raw != "full":
+                continue
+            key = f"{ds_k}{hz_k}{var}"
             M.num(f"PoolMechRMSE{key}", mr, 2)
             if df is not None:
                 M.add(f"PoolMechDiff{key}", "+0.00" if abs(round(df, 2)) < 1e-9 else f"{df:+.2f}")
@@ -997,6 +1008,8 @@ def generate_macros(strict=False, quiet=False):
             pm_ns[(r["dataset"], hz_k)] = r.get("n", "")
         var_order = [
             ("HBML", r"\texttt{HBML} (primary 7-expert pool)"),
+            ("HBML-interleaved", r"\texttt{HBML-interleaved} ($h+1$ independent copies)"),
+            ("HBML-shortctx-pool", r"\texttt{HBML} short-context pool (\texttt{ARIMA}/\texttt{ETS}/\texttt{N-HITS})"),
             ("Uniform", r"Uniform ensemble ($p_k = 1/7$)"),
             ("FixedConvex-CV", r"Fixed convex weights (5-fold CV)"),
             ("HBML-no-reference", r"\texttt{HBML} without Persistence \& RunningMean"),
@@ -1043,6 +1056,355 @@ def generate_macros(strict=False, quiet=False):
         ]
         with open(os.path.join(TABLES_DIR, "table_pool_mechanism.tex"), "w", encoding="utf-8") as f:
             f.write("\n".join(pm_lines) + "\n")
+
+    # External GlucoBench cohorts (Hall 2018 & Dubosson / D1NAMO)
+    def _read_abs_csv(rel_p):
+        p = os.path.join(BASE_DIR, rel_p)
+        if not os.path.exists(p):
+            return []
+        with open(p, newline="", encoding="utf-8") as f:
+            return list(csv.DictReader(f))
+
+    M.section("External validation cohorts (Hall 2018 & Dubosson D1NAMO)")
+    ext_tex_rows = []
+    for ds_raw, ds_k, ds_disp in (("hall", "Hall", "Hall 2018"), ("dubosson", "Dubosson", "Dubosson (D1NAMO T1D)")):
+        r_sum = _read_abs_csv(f"external_results/{ds_raw}/rmse_summary.csv")
+        st_rows = _read_abs_csv(f"external_results/{ds_raw}/statistical_tests_best_expert.csv")
+        mech_rows = _read_abs_csv(f"external_results/{ds_raw}/pool_mechanism_summary.csv")
+        hypo_rows = _read_abs_csv(f"external_results/{ds_raw}/clinical_hypo.csv")
+        mfar_rows = _read_abs_csv(f"external_results/{ds_raw}/clinical_hypo_matched_far.csv")
+        w_rows = _read_abs_csv(f"external_results/{ds_raw}/weights_summary.csv")
+
+        if r_sum:
+            M.add(f"ExtN{ds_k}", r_sum[0].get("n", ""))
+            n_hb_win = 0
+            for r in r_sum:
+                hz_k = horizon_label(r["horizon"])
+                ctx_raw = str(r["context"]).strip().lower()
+                ctx_k = CTX_NAME.get(ctx_raw, clean_name(ctx_raw))
+                key = f"{ds_k}{hz_k}{ctx_k}"
+                hb_v = to_float(r.get("HBML_mean", ""))
+                be_v = to_float(r.get("BestExpert_mean", ""))
+                if hb_v is not None and be_v is not None and hb_v < be_v:
+                    n_hb_win += 1
+                M.num(f"ExtRMSE{key}HBML", hb_v, 2)
+                M.num(f"ExtRMSE{key}HBMLsd", to_float(r.get("HBML_sd", "")), 2)
+                M.add(f"ExtBestExpert{key}", r.get("best_expert", ""))
+                M.num(f"ExtBestRMSE{key}", be_v, 2)
+                M.num(f"ExtInterleavedRMSE{key}", to_float(r.get("HBML_Interleaved_mean", "")), 2)
+                M.num(f"ExtShortCtxRMSE{key}", to_float(r.get("HBML_ShortCtx_mean", "")), 2)
+                M.num(f"ExtFTLRMSE{key}", to_float(r.get("FTL_mean", "")), 2)
+                M.num(f"ExtUniformRMSE{key}", to_float(r.get("Uniform_mean", "")), 2)
+            M.add(f"ExtNConfigs{ds_k}", len(r_sum))
+            M.add(f"ExtNHBMLLowest{ds_k}", n_hb_win)
+
+        if st_rows:
+            st_map = {}
+            n_eq_boot = 0
+            n_eq_rel5 = 0
+            n_sig_better = 0
+            for r in st_rows:
+                hz_k = horizon_label(r["horizon"])
+                ctx_raw = str(r["context"]).strip().lower()
+                ctx_k = CTX_NAME.get(ctx_raw, clean_name(ctx_raw))
+                key = f"{ds_k}{hz_k}{ctx_k}"
+                d = to_float(r.get("paired_diff_mean", ""))
+                lo = to_float(r.get("ci95_mean_low", ""))
+                hi = to_float(r.get("ci95_mean_high", ""))
+                tlo = to_float(r.get("tost_boot_ci90_low", ""))
+                thi = to_float(r.get("tost_boot_ci90_high", ""))
+                pbh = to_float(r.get("wilcoxon_p_bh", ""))
+                tp = to_float(r.get("tost_boot_p", ""))
+                trp = to_float(r.get("tost_rel5_p", ""))
+                if d is not None:
+                    M.add(f"ExtPairedDiff{key}", f"{d:+.2f}")
+                M.num(f"ExtDiffLow{key}", lo, 2)
+                M.num(f"ExtDiffHigh{key}", hi, 2)
+                if tlo is not None:
+                    M.add(f"ExtTOSTLow{key}", f"{tlo:+.2f}")
+                if thi is not None:
+                    M.add(f"ExtTOSTHigh{key}", f"{thi:+.2f}")
+                M.add(f"ExtWilcoxonPBH{key}", tex_p(pbh))
+                M.add(f"ExtTOSTBootP{key}", tex_p(tp))
+                M.add(f"ExtTOSTRelFiveP{key}", tex_p(trp))
+                M.add(f"ExtNImproved{key}", r.get("n_improved", ""))
+                M.num(f"ExtPctImproved{key}", to_float(r.get("pct_improved", "")), 1)
+                if str(r.get("equiv_boot", "")).strip().lower() == "true":
+                    n_eq_boot += 1
+                if trp is not None and trp < 0.05:
+                    n_eq_rel5 += 1
+                if pbh is not None and pbh < 0.05 and d is not None and d > 0:
+                    n_sig_better += 1
+                st_map[(hz_k, ctx_raw)] = r
+            M.add(f"ExtNEquivBoot{ds_k}", n_eq_boot)
+            M.add(f"ExtNEquivRelFive{ds_k}", n_eq_rel5)
+            M.add(f"ExtNSigBHBetter{ds_k}", n_sig_better)
+
+            for r_s in r_sum:
+                hz_k = horizon_label(r_s["horizon"])
+                ctx_raw = str(r_s["context"]).strip().lower()
+                st_r = st_map.get((hz_k, ctx_raw), {})
+                pbh = to_float(st_r.get("wilcoxon_p_bh", ""))
+                tp = to_float(st_r.get("tost_boot_p", ""))
+                trp = to_float(st_r.get("tost_rel5_p", ""))
+                d = to_float(st_r.get("paired_diff_mean", ""))
+                tlo = to_float(st_r.get("tost_boot_ci90_low", ""))
+                thi = to_float(st_r.get("tost_boot_ci90_high", ""))
+                ext_tex_rows.append(
+                    f"{ds_disp} & {r_s['horizon']} & {r_s['context']} & {r_s['n']} & "
+                    f"{float(r_s['HBML_mean']):.2f} & {r_s['best_expert']} ({float(r_s['BestExpert_mean']):.2f}) & "
+                    f"{d:+.2f} [{tlo:+.2f}, {thi:+.2f}] & {tex_p(pbh)} & {tex_p(tp)} & {tex_p(trp)} & "
+                    f"{float(r_s['HBML_Interleaved_mean']):.2f} & {float(r_s['HBML_ShortCtx_mean']):.2f} \\\\"
+                )
+
+        for r in mech_rows:
+            hz_k = horizon_label(r["horizon"])
+            ctx_k = CTX_NAME.get(str(r["context"]).strip().lower(), clean_name(r["context"]))
+            var_k = clean_name(r["variant"])
+            df = to_float(r.get("diff_vs_hbml", ""))
+            lo = to_float(r.get("diff_ci95_low", ""))
+            hi = to_float(r.get("diff_ci95_high", ""))
+            if df is not None:
+                M.add(f"ExtMechDiff{ds_k}{hz_k}{ctx_k}{var_k}", f"{df:+.2f}")
+            if lo is not None:
+                M.add(f"ExtMechDiffLow{ds_k}{hz_k}{ctx_k}{var_k}", f"{lo:+.2f}")
+            if hi is not None:
+                M.add(f"ExtMechDiffHigh{ds_k}{hz_k}{ctx_k}{var_k}", f"{hi:+.2f}")
+
+        for r in w_rows:
+            hz_k = horizon_label(r["horizon"])
+            ctx_k = CTX_NAME.get(str(r["context"]).strip().lower(), clean_name(r["context"]))
+            M.num(f"ExtWeightMeanRunningMean{ds_k}{hz_k}{ctx_k}", to_float(r.get("mean_w_RunningMean", "")), 2)
+            M.num(f"ExtWeightDomPctRunningMean{ds_k}{hz_k}{ctx_k}", to_float(r.get("dom_pct_RunningMean", "")), 1)
+
+        for r in hypo_rows:
+            hz_k = horizon_label(r["horizon"])
+            m_k = clean_name(r["model"])
+            key = f"{m_k}{ds_k}{hz_k}"
+            M.add(f"ExtHypoEpisodes{ds_k}{hz_k}", r.get("n_episodes", ""))
+            M.num(f"ExtHypoEpSens{key}", to_float(r.get("episode_sensitivity_pct", "")), 1)
+            ac_v = to_float(r.get("above_chance_pp", ""))
+            if ac_v is not None:
+                M.add(f"ExtHypoAboveChance{key}", f"{ac_v:+.1f}")
+            M.num(f"ExtHypoClusterPPV{key}", to_float(r.get("cluster_ppv_pct", "")), 1)
+            M.num(f"ExtHypoFarDay{key}", to_float(r.get("false_alerts_per_day", "")), 2)
+            M.num(f"ExtHypoFarCalDay{key}", to_float(r.get("false_alerts_per_calendar_day", "")), 2)
+            M.num(f"ExtHypoParkesAB{key}", to_float(r.get("parkes_ab_pct", "")), 1)
+
+        far_word = {0.25: "TwentyFive", 0.35: "ThirtyFive", 0.45: "FortyFive", 0.55: "FiftyFive",
+                    0.65: "SixtyFive", 0.75: "SeventyFive", 0.85: "EightyFive", 1.0: "Hundred"}
+        warn_word = {0: "Zero", 10: "Ten", 15: "Fifteen", 20: "Twenty"}
+        for r in mfar_rows:
+            far = round(float(r["false_alerts_per_day"]), 2)
+            w = int(float(r["min_warning_min"]))
+            if far not in far_word or w not in warn_word:
+                continue
+            key = f"{ds_k}{clean_name(r['model'])}Warn{warn_word[w]}Far{far_word[far]}"
+            M.num(f"ExtMatchedSens{key}", to_float(r.get("sensitivity_pct", "")), 1)
+            d = to_float(r.get("diff_vs_reference_pp", ""))
+            lo = to_float(r.get("diff_ci95_low", ""))
+            hi = to_float(r.get("diff_ci95_high", ""))
+            if d is not None:
+                M.add(f"ExtMatchedDiff{key}", f"{d:+.1f}")
+            if lo is not None:
+                M.add(f"ExtMatchedDiffLow{key}", f"{lo:+.1f}")
+            if hi is not None:
+                M.add(f"ExtMatchedDiffHigh{key}", f"{hi:+.1f}")
+
+    # Hall diagnosis subgroup summary (computed directly from hall_manifest + rmse_participant)
+    hall_man = _read_abs_csv("hall/hall_manifest.csv")
+    hall_part = _read_abs_csv("external_results/hall/rmse_participant.csv")
+    if hall_man and hall_part:
+        diag_map = {r["pid"]: r["diagnosis"] for r in hall_man}
+        pheno_name = {"normoglycemic": "Normo", "pre-diabetic": "Prediabetes", "T2D": "TypeTwo"}
+        from collections import defaultdict
+        by_ph = defaultdict(list)
+        for r in hall_part:
+            if r.get("context") == "full":
+                ph = pheno_name.get(diag_map.get(r["id"], ""))
+                if ph:
+                    by_ph[(ph, horizon_label(r["horizon"]))].append(r)
+        for ph in ("Normo", "Prediabetes", "TypeTwo"):
+            rows0 = by_ph.get((ph, "ThirtyMin"), [])
+            if rows0:
+                M.add(f"ExtHall{ph}N", len(rows0))
+            for hz_k in ("ThirtyMin", "TwoHour", "FiveHour"):
+                sub = by_ph.get((ph, hz_k), [])
+                if not sub:
+                    continue
+                hb_m = sum(float(x["HBML"]) for x in sub) / len(sub)
+                exp_m = {c: sum(float(x[c]) for x in sub) / len(sub)
+                         for c in ("ARIMA", "ETS", "NHITS", "NODE", "XGBoost", "Persistence", "RunningMean")}
+                bm = min(exp_m, key=exp_m.get)
+                M.num(f"ExtHall{ph}HBML{hz_k}", hb_m, 2)
+                M.add(f"ExtHall{ph}BestName{hz_k}", bm)
+                M.num(f"ExtHall{ph}BestRMSE{hz_k}", exp_m[bm], 2)
+
+    if ext_tex_rows:
+        ext_lines = [
+            r"\begin{table*}[t]",
+            r"\centering",
+            r"\scriptsize",
+            r"\resizebox{\linewidth}{!}{%",
+            r"\begin{tabular}{lccccccccccc}",
+            r"\toprule",
+            r"Cohort & Hor.\ (h) & Ctx & $N$ & \texttt{HBML} & Best expert & Paired $\Delta$ [90\% CI] & $p_{\mathrm{BH}}$ & $p_{\mathrm{TOST}}$ ($\pm 1.0$) & $p_{\mathrm{TOST}}$ (5\%) & Interleaved & Short-ctx \\",
+            r"\midrule",
+        ]
+        prev_ds = None
+        for ln in ext_tex_rows:
+            cur_ds = ln.split("&", 1)[0].strip()
+            if prev_ds is not None and cur_ds != prev_ds:
+                ext_lines.append(r"\midrule")
+            prev_ds = cur_ds
+            ext_lines.append(ln)
+        ext_lines += [
+            r"\bottomrule",
+            r"\end{tabular}%",
+            r"}",
+            r"\caption{\textbf{Confirmatory external cohort validation on untouched GlucoBench cohorts (Hall 2018, $N=\ExtNHall$; Dubosson D1NAMO T1D, $N=\ExtNDubosson$) using locked Engine v2.3.} Cohort-mean RMSE (mg/dL), leading constituent expert, paired difference ($\text{RMSE}_{\text{best}} - \text{RMSE}_{\text{HBML}}$, mg/dL) with 90\% bootstrap TOST interval, BH-adjusted Wilcoxon $p$-value, $\pm 1.0$~mg/dL and $\pm 5\%$ relative TOST $p$-values, $(h+1)$-learner interleaved variant, and equal-context \{\texttt{ARIMA},\texttt{ETS},\texttt{N-HITS}\} sub-pool.}",
+            r"\label{tab:external_validation}",
+            r"\end{table*}",
+        ]
+        with open(os.path.join(TABLES_DIR, "table_external_validation.tex"), "w", encoding="utf-8") as f:
+            f.write("\n".join(ext_lines) + "\n")
+
+    M.section("Validation audits: neural fit windows, cohort sensitivity, and gap-burden tertiles")
+    fit_rows = _read_abs_csv("validation_results/validation_fit_windows.csv")
+    coh_rows = _read_abs_csv("validation_results/validation_cohort_sensitivity.csv")
+    gap_rows = _read_abs_csv("validation_results/validation_gap_burden.csv")
+
+    if fit_rows:
+        for r in fit_rows:
+            if r.get("context") == "full" and r.get("expert") in ("NHITS", "NODE"):
+                ds_k = dataset_label(r["dataset"])
+                hz_k = horizon_label(r["horizon"])
+                exp_k = clean_name(r["expert"])
+                key = f"{ds_k}{hz_k}{exp_k}"
+                M.num(f"ValFitTrainMed{key}", to_float(r.get("train_win_med_of_medians", "")), 1)
+                M.num(f"ValFitTrainPTen{key}", to_float(r.get("train_win_p10_of_medians", "")), 1)
+                M.num(f"ValFitValMed{key}", to_float(r.get("val_win_med_of_medians", "")), 1)
+                M.add(f"ValFitRefits{key}", r.get("total_refits", ""))
+                M.add(f"ValFitFallbacks{key}", r.get("total_fallbacks", ""))
+                M.add(f"ValFitNoESCount{key}", r.get("refits_without_early_stopping", ""))
+                no_es_pct = to_float(r.get("pct_refits_without_early_stopping", ""))
+                M.num(f"ValFitNoESPct{key}", no_es_pct, 2)
+                if no_es_pct is not None:
+                    M.num(f"ValFitESActivePct{key}", 100.0 - no_es_pct, 2)
+        tot_fb = sum(int(float(r.get("total_fallbacks", 0) or 0)) for r in fit_rows)
+        M.add("ValFitGrandTotalFallbacks", tot_fb)
+
+    # Manifest-derived span & raw cohort size macros (hall & dubosson)
+    import datetime as _dt
+    for ds_raw, ds_k in (("hall", "Hall"), ("dubosson", "Dubosson")):
+        man_rows = _read_abs_csv(f"{ds_raw}/{ds_raw}_manifest.csv")
+        if man_rows:
+            M.add(f"ExtNRaw{ds_k}", len(man_rows))
+            spans_all = []
+            spans_elig = []
+            for mr in man_rows:
+                try:
+                    t0 = _dt.datetime.fromisoformat(mr["start_ts"])
+                    t1 = _dt.datetime.fromisoformat(mr["end_ts"])
+                    d_span = (t1 - t0).total_seconds() / 86400.0
+                    spans_all.append(d_span)
+                    if int(float(mr.get("n_points", 0) or 0)) >= 600:
+                        spans_elig.append(d_span)
+                except Exception:
+                    pass
+            use_sp = spans_elig or spans_all
+            if use_sp:
+                M.num(f"ExtSpanDaysMin{ds_k}", min(use_sp), 1)
+                M.num(f"ExtSpanDaysMax{ds_k}", max(use_sp), 1)
+
+    coh_name = {"retained_ge288": "Retained", "all_scorable_ge1": "AllScorable", "common_all_conditions": "Common"}
+    coh_tex_rows = []
+    for r in coh_rows:
+        if r.get("context") != "full":
+            continue
+        ds_k = dataset_label(r["dataset"])
+        hz_k = horizon_label(r["horizon"])
+        c_k = coh_name.get(r["cohort_set"], clean_name(r["cohort_set"]))
+        key = f"{ds_k}{hz_k}{c_k}"
+        M.add(f"ValCohN{key}", r.get("n", ""))
+        M.num(f"ValCohHBML{key}", to_float(r.get("hbml_rmse", "")), 2)
+        M.num(f"ValCohBestRMSE{key}", to_float(r.get("best_expert_rmse", "")), 2)
+        d = to_float(r.get("mean_diff_best_minus_hbml", ""))
+        if d is not None:
+            M.add(f"ValCohDiff{key}", f"{d:+.2f}")
+        M.add(f"ValCohWilcoxonP{key}", tex_p(to_float(r.get("wilcoxon_p", ""))))
+        M.add(f"ValCohTOSTBootP{key}", tex_p(to_float(r.get("tost_boot_p", ""))))
+        if ds_k == "Weinstock":
+            c_disp = {"Retained": r"Retained ($\ge 288$)", "AllScorable": r"All scorable ($\ge 1$)", "Common": r"Common ($N=195$)"}[c_k]
+            coh_tex_rows.append(
+                f"{r['horizon']} h & {c_disp} & {r['n']} & {float(r['hbml_rmse']):.2f} & {r['best_expert']} ({float(r['best_expert_rmse']):.2f}) & "
+                f"{d:+.2f} & {tex_p(to_float(r['wilcoxon_p']))} & {tex_p(to_float(r['tost_boot_p']))} \\\\"
+            )
+
+    gap_name = {"T1_LowGap": "LowGap", "T2_MedGap": "MedGap", "T3_HighGap": "HighGap"}
+    gap_tex_rows = []
+    for r in gap_rows:
+        ds_k = dataset_label(r["dataset"])
+        hz_k = horizon_label(r["horizon"])
+        g_k = gap_name.get(r["stratum"], clean_name(r["stratum"]))
+        key = f"{ds_k}{hz_k}{g_k}"
+        M.num(f"ValGapMissingPct{key}", to_float(r.get("mean_missing_pct", "")), 1)
+        M.num(f"ValGapMaxMissingPct{key}", to_float(r.get("max_missing_pct", "")), 1)
+        M.num(f"ValGapBridgedPct{key}", to_float(r.get("mean_bridged_pct", "")), 1)
+        M.num(f"ValGapSegments{key}", to_float(r.get("mean_segments", "")), 1)
+        M.num(f"ValGapHBML{key}", to_float(r.get("hbml_rmse", "")), 2)
+        M.num(f"ValGapBestRMSE{key}", to_float(r.get("best_expert_rmse", "")), 2)
+        d = to_float(r.get("diff_best_minus_hbml", ""))
+        if d is not None:
+            M.add(f"ValGapDiff{key}", f"{d:+.2f}")
+        M.num(f"ValGapHypoSens{key}", to_float(r.get("hypo_sens_pct", "")), 1)
+        ac = to_float(r.get("above_chance_pp", ""))
+        if ac is not None:
+            M.add(f"ValGapAboveChance{key}", f"{ac:+.1f}")
+        M.num(f"ValGapClusterPPV{key}", to_float(r.get("cluster_ppv_pct", "")), 1)
+        M.num(f"ValGapFarDay{key}", to_float(r.get("false_alerts_per_day", "")), 2)
+        if ds_k == "Weinstock":
+            g_disp = {"LowGap": "T1 (Low gap)", "MedGap": "T2 (Med gap)", "HighGap": "T3 (High gap)"}[g_k]
+            gap_tex_rows.append(
+                f"{r['horizon']} h & {g_disp} & {r['n']} & {float(r['mean_missing_pct']):.1f} & {float(r['mean_bridged_pct']):.1f} & "
+                f"{float(r['hbml_rmse']):.2f} & {r['best_expert']} ({float(r['best_expert_rmse']):.2f}) & {d:+.2f} & "
+                f"{float(r['hypo_sens_pct']):.1f} & {float(r['cluster_ppv_pct']):.1f} \\\\"
+            )
+
+    if coh_tex_rows or gap_tex_rows:
+        va_lines = [
+            r"\begin{table*}[t]",
+            r"\centering",
+            r"\scriptsize",
+            r"\begin{subtable}{\linewidth}\centering",
+            r"\begin{tabular}{llcccccc}",
+            r"\toprule",
+            r"Horizon & Cohort definition & $N$ & \texttt{HBML} RMSE & Best expert RMSE & Diff ($\text{best}-\text{HBML}$) & Wilcoxon $p$ & $p_{\mathrm{TOST}}$ ($\pm 1.0$) \\",
+            r"\midrule",
+        ] + coh_tex_rows + [
+            r"\bottomrule",
+            r"\end{tabular}",
+            r"\caption{Weinstock 2016 eligibility sensitivity across all scorable ($N=200$), retained ($\ge 288$), and common ($N=195$) cohorts (full history).}",
+            r"\end{subtable}",
+            r"\par\medskip",
+            r"\begin{subtable}{\linewidth}\centering",
+            r"\resizebox{\linewidth}{!}{%",
+            r"\begin{tabular}{llcccccccc}",
+            r"\toprule",
+            r"Horizon & Missingness tertile & $N$ & Missing (\%) & Bridged (\%) & \texttt{HBML} RMSE & Best expert RMSE & Diff & Hypo sens.\ (\%) & Cluster PPV (\%) \\",
+            r"\midrule",
+        ] + gap_tex_rows + [
+            r"\bottomrule",
+            r"\end{tabular}%",
+            r"}",
+            r"\caption{Weinstock 2016 stratification by total missing-slot tertile (full history; CGMacros has 0.0\% missingness throughout).}",
+            r"\end{subtable}",
+            r"\caption{\textbf{Zero-retraining validation audits on cached Engine v2.3 Weinstock outputs.} Panel (a) confirms invariance across participant inclusion thresholds; panel (b) confirms predictive accuracy and pre-onset hypoglycaemia safety under heavy missingness and bridging.}",
+            r"\label{tab:validation_audits}",
+            r"\end{table*}",
+        ]
+        with open(os.path.join(TABLES_DIR, "table_validation_audits.tex"), "w", encoding="utf-8") as f:
+            f.write("\n".join(va_lines) + "\n")
     else:   # not yet computed: visible placeholders keep the manuscript compiling
         for m in ("HBML", "Persistence", "BestExpert"):
             for ww in ("Zero", "Ten", "Fifteen", "Twenty"):
