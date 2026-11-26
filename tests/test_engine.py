@@ -459,6 +459,70 @@ def test_validation_and_external_scripts_synthetic():
     assert not scipy_warns, [str(w.message) for w in scipy_warns]
 
 
+def test_alternative_losses_and_mixture_eg():
+    """Verify alternative Hedge loss functions, Mixture-EG bias cancellation, and expert_loss backward compat."""
+    rng = np.random.default_rng(123)
+    T = 900
+    y = 110.0 + 35.0 * np.sin(np.arange(T) * 0.06) + rng.normal(0.0, 2.0, T)
+    y[500:512] = 62.0  # hypoglycemic dip for asym_hypo & pinball20 checks
+    # Build two complementary biased experts + one noisy expert: mean of 0 and 1 cancels bias!
+    F = np.column_stack([y + 12.0, y - 12.0, y + rng.normal(0.0, 25.0, T)])
+    F[:294] = 0.0
+
+    # Default online_losses == squared error
+    L_def = agg.online_losses(F, y, start=288, horizon=6)
+    L_sq = agg.online_losses(F, y, start=288, horizon=6, loss_fn="squared")
+    assert np.allclose(L_def, L_sq)
+
+    # Check MAE / Huber / Pinball / AsymHypo properties
+    L_mae = agg.online_losses(F, y, start=288, horizon=6, loss_fn="mae")
+    L_hub = agg.online_losses(F, y, start=288, horizon=6, loss_fn="huber15")
+    L_pin = agg.online_losses(F, y, start=288, horizon=6, loss_fn="pinball20")
+    L_asy = agg.online_losses(F, y, start=288, horizon=6, loss_fn="asym_hypo")
+    assert np.allclose(L_mae[505], np.abs(F[505] - y[505]))
+    assert np.all(L_hub[294:] > 0)
+    # Missed hypoglycemia (expert 0 overpredicts 62 by +12) gets 4x squared penalty vs expert 1
+    assert L_asy[505, 0] > 3.5 * L_asy[505, 1]
+    assert L_pin[505, 0] > 3.5 * L_pin[505, 1]
+
+    # Mixture-EG: optimizes ensemble loss directly, beating Uniform on this complementary pool
+    mask = ev.scored_mask(F, y)
+    p_mix, l_mix, w_mix = agg.run_mixture_eg(F, L_sq, y, start=288, horizon=6, return_weights=True)
+    rmse_mix = ev.rmse(l_mix, mask)
+    rmse_uni = ev.rmse((F.mean(axis=1) - y) ** 2, mask)
+    assert rmse_mix < rmse_uni and rmse_mix < 5.0, f"MixEG={rmse_mix:.3f}, Uni={rmse_uni:.3f}"
+
+    # Unit scale-invariance of Mixture-EG (mg/dL -> mmol/L)
+    sc = 1.0 / 18.0182
+    p_sc, _, w_sc = agg.run_mixture_eg(F * sc, L_sq * (sc ** 2), y * sc, start=288, horizon=6, return_weights=True)
+    assert np.allclose(w_mix[350:], w_sc[350:], atol=1e-4)
+    assert np.allclose(p_mix[mask] * sc, p_sc[mask], atol=1e-3)
+
+    # Causality check: perturbing future target y[600:] must not change Mixture-EG predictions up to 600+6
+    y_fut = y.copy()
+    F_fut = F.copy()
+    y_fut[600:] += 200.0
+    F_fut[607:] += 200.0
+    p_fut, _ = agg.run_mixture_eg(F_fut, L_sq, y_fut, start=288, horizon=6)
+    assert np.array_equal(p_mix[:606], p_fut[:606])
+
+    # Backward-compatible FastRollingSimulation settings() for expert_loss
+    s_default = FastRollingSimulation(horizon=6).settings()
+    assert "expert_loss" not in s_default
+    s_huber = FastRollingSimulation(horizon=6, expert_loss="huber20").settings()
+    assert s_huber["expert_loss"] == "huber20"
+    for eloss in ("huber20", "pinball20", "asym_hypo"):
+        obj = fm._xgb_custom_obj(eloss, np.full(10, 75.0))
+        if eloss == "huber20":
+            assert obj is None
+        else:
+            class _DM:
+                def get_label(self):
+                    return np.zeros(10)
+            g, h_ = obj(np.full(10, 5.0), _DM())
+            assert g.shape == (10,) and h_.shape == (10,) and np.all(h_ > 0) and np.all(g > 0)
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

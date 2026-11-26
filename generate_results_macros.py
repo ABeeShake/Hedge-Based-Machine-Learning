@@ -269,7 +269,7 @@ def generate_macros(strict=False, quiet=False):
         rmse_block(M, rows, "mean", "sd", "Mean", "sd", lambda r: dataset_label(r["dataset"]), prefix="MaxAE")
 
     # 2. CGMacros subgroups
-    M.section("CGMacros glycaemic-status subgroups: RMSE")
+    M.section("CGMacros glycemic-status subgroups: RMSE")
     sub_cfg = {}
     for status, sname in STATUS_NAME.items():
         rows = need(f"rmse_mean_cgmacros_{status}.csv")
@@ -692,6 +692,7 @@ def generate_macros(strict=False, quiet=False):
             r"\begin{table*}[t]",
             r"\centering",
             r"\scriptsize",
+            r"\resizebox{\linewidth}{!}{%",
             r"\begin{tabular}{llccccc}",
             r"\toprule",
             r"Dataset & Aggregator variant & 0.5 hr (Full) & 2 hr (Full) & 5 hr (Full) & Mean $\Delta\%$ & Wins / $N_{\text{cfg}}$ \\",
@@ -713,7 +714,8 @@ def generate_macros(strict=False, quiet=False):
                 t_lines.append(f"{ds_disp} & {vlabel} & {s30} & {s2h} & {s5h} & {mch}\\% & {wns} \\\\")
         t_lines += [
             r"\bottomrule",
-            r"\end{tabular}",
+            r"\end{tabular}%",
+            r"}",
             r"\caption{\textbf{Ablation across online aggregation rules, loss-scale estimators, Follow-the-Leader, and Fixed-Share mixing schedules.} "
             r"All variants aggregate the identical constituent expert forecasts over the identical retained participant cohorts and evaluation windows. "
             r"Columns 3--5 report cohort-mean participant-level RMSE (mg/dL) in the full-history configuration at the 30-minute, 2-hour, and 5-hour horizons. "
@@ -889,7 +891,7 @@ def generate_macros(strict=False, quiet=False):
             M.num(f"HypoSweepPeakAboveChance{m_k}", ac, 1)
             M.add(f"HypoSweepPeakAboveChanceThresh{m_k}", t_raw)
 
-    M.section("Hypoglycaemia: sensitivity at matched false-alert rates (Weinstock, 30 min, full history)")
+    M.section("Hypoglycemia: sensitivity at matched false-alert rates (Weinstock, 30 min, full history)")
     rows = read_rows("hypoglycemia_matched_far.csv")
     if rows:
         sources.append("hypoglycemia_matched_far.csv")
@@ -966,7 +968,7 @@ def generate_macros(strict=False, quiet=False):
             r"\bottomrule",
             r"\end{tabular}%",
             r"}",
-            r"\caption{\textbf{30-minute Weinstock pre-onset hypoglycaemia sensitivity at matched false-alert rates across minimum warning times ($\ge 5$, $10$, $15$, and $20$~min).} Values are pooled pre-onset sensitivities (\%) across \HypoEpisodesWeinstockThirtyMin{} evaluable episodes (\HypoParticipantsWithEpisodesWeinstockThirtyMin{} contributing of \NWeinstockThirtyMin{} retained participants) with 2,000-resample participant-clustered bootstrap 95\% confidence intervals obtained by interpolating each detector's 70--90~mg/dL threshold sweep without extrapolation (``---'' marks false-alert rates below ARIMA's minimum operating rate of \HypoFalseAlertsDayBestExpertWeinstockThirtyMin{} alerts/day). Paired differences ``HBML $-$ Persistence'' show HBML sensitivity minus current-reading persistence sensitivity at each matched false-alert rate.}",
+            r"\caption{\textbf{30-minute Weinstock pre-onset hypoglycemia sensitivity at matched false-alert rates across minimum warning times ($\ge 5$, $10$, $15$, and $20$~min).} Values are pooled pre-onset sensitivities (\%) across \HypoEpisodesWeinstockThirtyMin{} evaluable episodes (\HypoParticipantsWithEpisodesWeinstockThirtyMin{} contributing of \NWeinstockThirtyMin{} retained participants) with 2,000-resample participant-clustered bootstrap 95\% confidence intervals obtained by interpolating each detector's 70--90~mg/dL threshold sweep without extrapolation (``---'' marks false-alert rates below ARIMA's minimum operating rate of \HypoFalseAlertsDayBestExpertWeinstockThirtyMin{} alerts/day). Paired differences ``HBML $-$ Persistence'' show HBML sensitivity minus current-reading persistence sensitivity at each matched false-alert rate.}",
             r"\label{tab:hypoglycemia_matched_far}",
             r"\end{table*}",
         ]
@@ -1154,6 +1156,7 @@ def generate_macros(strict=False, quiet=False):
                     f"{ds_disp} & {r_s['horizon']} & {r_s['context']} & {r_s['n']} & "
                     f"{float(r_s['HBML_mean']):.2f} & {r_s['best_expert']} ({float(r_s['BestExpert_mean']):.2f}) & "
                     f"{d:+.2f} [{tlo:+.2f}, {thi:+.2f}] & {tex_p(pbh)} & {tex_p(tp)} & {tex_p(trp)} & "
+                    f"{float(r_s['Uniform_mean']):.2f} & {float(r_s['FTL_mean']):.2f} & "
                     f"{float(r_s['HBML_Interleaved_mean']):.2f} & {float(r_s['HBML_ShortCtx_mean']):.2f} \\\\"
                 )
 
@@ -1246,9 +1249,9 @@ def generate_macros(strict=False, quiet=False):
             r"\centering",
             r"\scriptsize",
             r"\resizebox{\linewidth}{!}{%",
-            r"\begin{tabular}{lccccccccccc}",
+            r"\begin{tabular}{lccccccccccccc}",
             r"\toprule",
-            r"Cohort & Hor.\ (h) & Ctx & $N$ & \texttt{HBML} & Best expert & Paired $\Delta$ [90\% CI] & $p_{\mathrm{BH}}$ & $p_{\mathrm{TOST}}$ ($\pm 1.0$) & $p_{\mathrm{TOST}}$ (5\%) & Interleaved & Short-ctx \\",
+            r"Cohort & Hor.\ (h) & Ctx & $N$ & \texttt{HBML} & Best expert & Paired $\Delta$ [90\% CI] & $p_{\mathrm{BH}}$ & $p_{\mathrm{TOST}}$ ($\pm 1.0$) & $p_{\mathrm{TOST}}$ (5\%) & \texttt{Uniform} & \texttt{FTL} & Interleaved & Short-ctx \\",
             r"\midrule",
         ]
         prev_ds = None
@@ -1262,7 +1265,7 @@ def generate_macros(strict=False, quiet=False):
             r"\bottomrule",
             r"\end{tabular}%",
             r"}",
-            r"\caption{\textbf{Confirmatory external cohort validation on untouched GlucoBench cohorts (Hall 2018, $N=\ExtNHall$; Dubosson D1NAMO T1D, $N=\ExtNDubosson$) using locked Engine v2.3.} Cohort-mean RMSE (mg/dL), leading constituent expert, paired difference ($\text{RMSE}_{\text{best}} - \text{RMSE}_{\text{HBML}}$, mg/dL) with 90\% bootstrap TOST interval, BH-adjusted Wilcoxon $p$-value, $\pm 1.0$~mg/dL and $\pm 5\%$ relative TOST $p$-values, $(h+1)$-learner interleaved variant, and equal-context \{\texttt{ARIMA},\texttt{ETS},\texttt{N-HITS}\} sub-pool.}",
+            r"\caption{\textbf{Confirmatory external cohort validation on untouched GlucoBench cohorts (Hall 2018, $N=\ExtNHall$; Dubosson D1NAMO T1D, $N=\ExtNDubosson$) using locked Engine v2.3.} Cohort-mean RMSE (mg/dL), leading constituent expert, paired difference ($\text{RMSE}_{\text{best}} - \text{RMSE}_{\text{HBML}}$, mg/dL) with 90\% bootstrap TOST interval, BH-adjusted Wilcoxon $p$-value, $\pm 1.0$~mg/dL and $\pm 5\%$ relative TOST $p$-values, equal-weight \texttt{Uniform}, Follow-the-Leader (\texttt{FTL}), $(h+1)$-learner interleaved variant, and equal-context \{\texttt{ARIMA},\texttt{ETS},\texttt{N-HITS}\} sub-pool.}",
             r"\label{tab:external_validation}",
             r"\end{table*}",
         ]
@@ -1399,7 +1402,7 @@ def generate_macros(strict=False, quiet=False):
             r"}",
             r"\caption{Weinstock 2016 stratification by total missing-slot tertile (full history; CGMacros has 0.0\% missingness throughout).}",
             r"\end{subtable}",
-            r"\caption{\textbf{Zero-retraining validation audits on cached Engine v2.3 Weinstock outputs.} Panel (a) confirms invariance across participant inclusion thresholds; panel (b) confirms predictive accuracy and pre-onset hypoglycaemia safety under heavy missingness and bridging.}",
+            r"\caption{\textbf{Zero-retraining validation audits on cached Engine v2.3 Weinstock outputs.} Panel (a) confirms invariance across participant inclusion thresholds; panel (b) confirms predictive accuracy and pre-onset hypoglycemia safety under heavy missingness and bridging.}",
             r"\label{tab:validation_audits}",
             r"\end{table*}",
         ]

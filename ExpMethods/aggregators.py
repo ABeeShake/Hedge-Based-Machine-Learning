@@ -39,6 +39,46 @@ import numpy as np
 EPS = 1e-8
 UPDATES = ("cumulative", "recursive", "ftl")
 SCALES = ("ema", "decay_max", "running_max", "sqrt_sum_sq")
+LOSS_FUNCTIONS = ("squared", "mae", "huber15", "huber25", "pinball20", "asym_hypo")
+
+
+def compute_point_loss(pred, target, loss_fn="squared"):
+    """Elementwise forecasting loss on real target slots (pred and target broadcast cleanly)."""
+    if loss_fn == "squared":
+        return (pred - target) ** 2
+    if loss_fn == "mae":
+        return np.abs(pred - target)
+    if loss_fn in ("huber15", "huber25"):
+        delta = 15.0 if loss_fn == "huber15" else 25.0
+        err = np.abs(pred - target)
+        return np.where(err <= delta, 0.5 * err ** 2, delta * (err - 0.5 * delta))
+    if loss_fn == "pinball20":
+        tau = 0.20
+        diff = target - pred
+        return np.where(diff >= 0.0, tau * diff, (tau - 1.0) * diff)
+    if loss_fn == "asym_hypo":
+        sq = (pred - target) ** 2
+        return np.where((target < 80.0) & (pred > target), 4.0 * sq, sq)
+    raise ValueError(f"Unknown loss_fn {loss_fn!r}; expected one of {LOSS_FUNCTIONS}")
+
+
+def _point_loss_deriv(pred, target, loss_fn="squared"):
+    """Derivative (or subgradient) d/d(pred) of compute_point_loss(pred, target, loss_fn)."""
+    r = pred - target
+    if loss_fn == "squared":
+        return 2.0 * r
+    if loss_fn == "mae":
+        return np.sign(r)
+    if loss_fn in ("huber15", "huber25"):
+        delta = 15.0 if loss_fn == "huber15" else 25.0
+        return np.clip(r, -delta, delta)
+    if loss_fn == "pinball20":
+        tau = 0.20
+        return np.where(r >= 0.0, 1.0 - tau, -tau)
+    if loss_fn == "asym_hypo":
+        w = np.where((target < 80.0) & (r > 0.0), 4.0, 1.0)
+        return 2.0 * w * r
+    raise ValueError(f"Unknown loss_fn {loss_fn!r}; expected one of {LOSS_FUNCTIONS}")
 
 
 def scorable(f_mat, targets):
@@ -55,13 +95,13 @@ def scorable(f_mat, targets):
     return ok
 
 
-def online_losses(f_mat, targets, start, horizon):
-    """Squared errors; zero (= no feedback, the aggregators skip the update) on the warm-up rows and on
-    rows that are not scorable (no issued forecast or no real reading). Mirrors simulate.get_online_losses."""
+def online_losses(f_mat, targets, start, horizon, loss_fn="squared"):
+    """Online feedback losses; zero (= no feedback, aggregators skip the update) on warm-up and
+    non-scorable rows. Defaults to squared error, mirroring simulate.get_online_losses."""
     f_mat = np.asarray(f_mat, dtype=float)
     y = np.asarray(targets, dtype=float).reshape(-1, 1)
     with np.errstate(invalid="ignore"):
-        l_mat = (f_mat - y) ** 2
+        l_mat = compute_point_loss(f_mat, y, loss_fn=loss_fn)
     l_mat[: start + horizon] = 0.0
     l_mat[~scorable(f_mat, y)] = 0.0
     return l_mat
@@ -203,19 +243,12 @@ def run_named(name, f_mat, l_mat, targets=None, **kwargs):
                      return_weights=kwargs.get("return_weights", False), **spec)
 
 
-def run_interleaved_hedge(name, f_mat, l_mat, targets, *, start, horizon, return_weights=False, **kwargs):
-    """Run (horizon + 1) independent interleaved non-delayed Hedge learners across slot offsets.
-
-    Each sub-learner r in {0, ..., horizon} receives targets at stride (horizon + 1) starting
-    at (start + horizon + r). Because consecutive targets in sub-stream r are separated by
-    (horizon + 1) steps while forecast delay is `horizon`, the target of prediction m is observed
-    strictly before the origin of prediction m + 1. Thus sub-learner r learns with zero feedback
-    delay on its own sub-stream without sharing updates across interleaved origins.
-    """
+def _run_interleaved(runner_fn, f_mat, l_mat, targets, *, start, horizon, return_weights=False):
+    """Shared (horizon + 1) modulo-strided non-delayed interleaved wrapper."""
     f_mat = np.asarray(f_mat, dtype=float)
     l_mat = np.asarray(l_mat, dtype=float)
     y = None if targets is None else np.asarray(targets, dtype=float).ravel()
-    T, K = l_mat.shape
+    T, K = f_mat.shape
     stride = int(horizon) + 1
     out_f = np.zeros(T, dtype=float)
     ok = scorable(f_mat, y) if y is not None else np.ones(T, dtype=bool)
@@ -230,8 +263,7 @@ def run_interleaved_hedge(name, f_mat, l_mat, targets, *, start, horizon, return
         f_pad = np.vstack([np.zeros((1, K), dtype=float), f_mat[idx_r]])
         l_pad = np.vstack([np.zeros((1, K), dtype=float), l_mat[idx_r]])
         y_pad = np.r_[np.nan, y[idx_r]] if y is not None else None
-        res = run_named(name, f_pad, l_pad, y_pad, start=0, horizon=1,
-                        return_weights=return_weights, **kwargs)
+        res = runner_fn(f_pad, l_pad, y_pad)
         if return_weights:
             f_sub, l_sub, w_sub = res
             W[idx_r + 1] = w_sub[1:len(idx_r) + 1]
@@ -247,3 +279,83 @@ def run_interleaved_hedge(name, f_mat, l_mat, targets, *, start, horizon, return
     if return_weights:
         return out_f, out_l, W
     return out_f, out_l
+
+
+def run_interleaved_hedge(name, f_mat, l_mat, targets, *, start, horizon, return_weights=False, **kwargs):
+    """Run (horizon + 1) independent interleaved non-delayed Hedge learners across slot offsets."""
+    return _run_interleaved(
+        lambda f_sub, l_sub, y_sub: run_named(name, f_sub, l_sub, y_sub, start=0, horizon=1,
+                                              return_weights=return_weights, **kwargs),
+        f_mat, l_mat, targets, start=start, horizon=horizon, return_weights=return_weights,
+    )
+
+
+def run_mixture_eg(f_mat, l_mat, targets, *, start, horizon, loss_fn="squared",
+                   prior_mix=0.0, return_weights=False):
+    """Scale-free Exponentiated Gradient optimizing ensemble mixture loss l(w^T f_t, y_t) directly.
+
+    Uses causal delayed gradient feedback g_t = d/dw l(w^T f_t, y_t) = psi'(pred_retro - y_t) * f_t,
+    normalized via Orabona-Pal adaptive range scale L_t = sqrt(sum_s (max g_s - min g_s)^2 / ln K).
+    Because predictions are shifted around pred_retro, the rule is both shift- and unit-scale invariant.
+    Returns squared error in ``out_l`` for uniform RMSE evaluation alongside online predictions.
+    """
+    f_mat = np.asarray(f_mat, dtype=float)
+    y = np.asarray(targets, dtype=float).ravel()
+    T, K = f_mat.shape
+    lnK = max(float(np.log(max(K, 2))), 1e-12)
+    w = np.ones(K) / K
+    cum_g = np.zeros(K)
+    sum_sq = 0.0
+    W = np.ones((T + 1, K)) / K if return_weights else None
+    out_f = np.zeros(T)
+    out_l = np.zeros(T)
+    ok = scorable(f_mat, y)
+
+    for g in range(start, T):
+        if g >= start + horizon and g < len(y) and ok[g]:
+            fg = f_mat[g]
+            fin = np.isfinite(fg)
+            if fin.any():
+                w_fin = np.where(fin, w, 0.0)
+                ws = float(w_fin.sum())
+                w_eff = (w_fin / ws) if ws > 1e-12 else (fin.astype(float) / fin.sum())
+                pred_retro = float(np.nansum(w_eff * fg))
+                fg_safe = np.where(fin, fg, pred_retro)
+                d_loss = float(_point_loss_deriv(pred_retro, y[g], loss_fn=loss_fn))
+                grad = d_loss * (fg_safe - pred_retro)
+                osc = float(grad.max() - grad.min())
+                sum_sq += osc * osc
+                L_eff = max(float(np.sqrt(sum_sq / lnK)), EPS)
+                cum_g = cum_g + grad
+                log_w = np.where(fin, -cum_g / L_eff, -np.inf)
+                log_w_fin = log_w[fin]
+                v = np.zeros(K)
+                v[fin] = np.exp(log_w_fin - log_w_fin.max())
+                s = float(v.sum())
+                v = (v / s) if s > 1e-12 else (fin.astype(float) / fin.sum())
+                w = (1.0 - prior_mix) * v + prior_mix / K if prior_mix > 0.0 else v
+
+        if return_weights:
+            W[g + 1] = w
+        t_target = g + horizon
+        if t_target < T:
+            pred = float(np.nansum(w * f_mat[t_target]))
+            out_f[t_target] = pred
+            if t_target < len(y):
+                out_l[t_target] = (pred - y[t_target]) ** 2 if ok[t_target] else np.nan
+
+    if return_weights:
+        return out_f, out_l, W
+    return out_f, out_l
+
+
+def run_interleaved_mixture_eg(f_mat, l_mat, targets, *, start, horizon, loss_fn="squared",
+                               prior_mix=0.0, return_weights=False):
+    """Run (horizon + 1) independent interleaved sub-learners of ``run_mixture_eg``."""
+    return _run_interleaved(
+        lambda f_sub, l_sub, y_sub: run_mixture_eg(
+            f_sub, l_sub, y_sub, start=0, horizon=1, loss_fn=loss_fn,
+            prior_mix=prior_mix, return_weights=return_weights,
+        ),
+        f_mat, l_mat, targets, start=start, horizon=horizon, return_weights=return_weights,
+    )

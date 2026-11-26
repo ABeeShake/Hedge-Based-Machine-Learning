@@ -27,6 +27,9 @@ import numpy as np
 from . import features as ft
 
 
+EXPERT_LOSSES = ("mse", "huber20", "pinball20", "asym_hypo")
+
+
 def resolve_device(device=None):
     import torch
     if device is not None:
@@ -40,11 +43,14 @@ class BaseExpert:
     name = "base"
     needs_fit = True
 
-    def __init__(self, horizon, context_len=None, retrain_interval=288, seed=0):
+    def __init__(self, horizon, context_len=None, retrain_interval=288, seed=0, expert_loss="mse"):
+        if expert_loss not in EXPERT_LOSSES:
+            raise ValueError(f"expert_loss must be one of {EXPERT_LOSSES}, got {expert_loss!r}")
         self.horizon = int(horizon)
         self.context_len = None if (context_len is None or context_len <= 0) else int(context_len)
         self.retrain_interval = int(retrain_interval)
         self.seed = seed
+        self.expert_loss = str(expert_loss)
         self.last_fit_t = None
         self.fit_seconds = []
         self.valid = None
@@ -123,6 +129,32 @@ class StatsForecaster(BaseExpert):
         return fc(state, h=self.horizon)["mean"][-1]
 
 
+def _xgb_custom_obj(expert_loss, base_train):
+    """Return custom (grad, hess) XGBoost objective for alternative losses, or None for native."""
+    if expert_loss in ("mse", "huber20"):
+        return None
+    base_arr = np.asarray(base_train, dtype=float)
+    if expert_loss == "pinball20":
+        tau, kappa = 0.20, 2.0
+        def obj(preds, dtrain):
+            err = preds - dtrain.get_label()
+            inside = np.abs(err) <= kappa
+            w = np.where(err >= 0.0, 1.0 - tau, tau)
+            grad = np.where(inside, (w / kappa) * err, np.where(err > 0.0, 1.0 - tau, -tau))
+            hess = np.where(inside, w / kappa, 1e-2)
+            return grad, hess
+        return obj
+    if expert_loss == "asym_hypo":
+        def obj(preds, dtrain):
+            label = dtrain.get_label()
+            err = preds - label
+            target_mgdl = base_arr + label
+            w = np.where((target_mgdl < 80.0) & (err > 0.0), 4.0, 1.0)
+            return 2.0 * w * err, 2.0 * w
+        return obj
+    raise ValueError(f"Unsupported XGBoost expert_loss={expert_loss!r}")
+
+
 class XGBoostExpert(BaseExpert):
     """Direct h-step gradient-boosted trees on lagged levels, deltas and rolling statistics
     (fast_engine.features.xgb_features); predicts the change y(t+h) - y(t)."""
@@ -131,18 +163,31 @@ class XGBoostExpert(BaseExpert):
     def __init__(self, n_estimators=200, learning_rate=0.05, max_depth=4, **kw):
         super().__init__(**kw)
         self.n_estimators = n_estimators
-        self.params = {"max_depth": max_depth, "eta": learning_rate, "objective": "reg:squarederror",
+        obj_name = "reg:pseudohubererror" if self.expert_loss == "huber20" else "reg:squarederror"
+        self.params = {"max_depth": max_depth, "eta": learning_rate, "objective": obj_name,
                        "tree_method": "hist", "subsample": 0.8, "colsample_bytree": 0.8,
                        "lambda": 1.0, "alpha": 0.0, "verbosity": 0, "nthread": 1, "seed": self.seed}
+        if self.expert_loss == "huber20":
+            self.params["huber_slope"] = 20.0
         self.booster = None
 
     def fit(self, history):
         import xgboost as xgb
-        X, Y = ft.xgb_training_set(history, len(history) - 1, self.horizon, self.valid, self.observed)
+        ends = ft.eligible_ends(self.valid, len(history) - 1, self.horizon, observed=self.observed)
+        if len(ends) == 0:
+            X, Y = None, None
+        else:
+            X = ft.xgb_features(history, ends)
+            Y = history[ends + self.horizon] - history[ends]
         self.fit_log.append(dict(t=len(history) - 1, n_train=0 if X is None else len(X), n_val=0,
                                  early_stopping=False))
-        self.booster = None if X is None or len(X) < 20 else xgb.train(
-            self.params, xgb.DMatrix(X, label=Y), num_boost_round=self.n_estimators)
+        if X is None or len(X) < 20:
+            self.booster = None
+        else:
+            cust_obj = _xgb_custom_obj(self.expert_loss, history[ends])
+            train_kw = {"obj": cust_obj} if cust_obj is not None else {}
+            self.booster = xgb.train(
+                self.params, xgb.DMatrix(X, label=Y), num_boost_round=self.n_estimators, **train_kw)
 
     def predict(self, history):
         if self.booster is None:
@@ -177,6 +222,31 @@ def _masked_mse(torch, pred, target, mask):
     """Mean squared error over observed target slots only."""
     m = mask.to(pred.dtype)
     return ((pred - target) ** 2 * m).sum() / m.sum().clamp_min(1.0)
+
+
+def _masked_expert_loss(torch, pred, target, mask, expert_loss="mse", scale_mgdl=1.0,
+                        target_mgdl=None, pred_mgdl=None):
+    """Unified masked trajectory loss for NODE and N-HITS across EXPERT_LOSSES."""
+    if expert_loss == "mse":
+        return _masked_mse(torch, pred, target, mask)
+    m = mask.to(pred.dtype)
+    r = pred - target
+    if expert_loss == "huber20":
+        delta = 20.0 / max(float(scale_mgdl), 1e-6)
+        abs_r = torch.abs(r)
+        elem = torch.where(abs_r <= delta, 0.5 * abs_r ** 2, delta * (abs_r - 0.5 * delta))
+    elif expert_loss == "pinball20":
+        tau = 0.20
+        kappa = 2.0 / max(float(scale_mgdl), 1e-6)
+        abs_r = torch.abs(r)
+        w = torch.where(r >= 0.0, 1.0 - tau, tau)
+        elem = torch.where(abs_r <= kappa, 0.5 * (w / kappa) * r ** 2, w * (abs_r - 0.5 * kappa))
+    elif expert_loss == "asym_hypo":
+        w = torch.where((target_mgdl < 80.0) & (pred_mgdl > target_mgdl), 4.0, 1.0)
+        elem = w * (r ** 2)
+    else:
+        raise ValueError(f"Unsupported neural expert_loss={expert_loss!r}")
+    return (elem * m).sum() / m.sum().clamp_min(1.0)
 
 
 def _fit_early_stopping(torch, net, opt, n_steps, val_loss_fn, step_fn,
@@ -248,7 +318,13 @@ class NODEExpert(BaseExpert):
         target = z[s[:, None] + offs]
         mask = torch.as_tensor(ft.target_mask(self.observed, ends, self.horizon), device=self.device)
         traj = self.net(x0, self.t_span)[1]
-        return _masked_mse(torch, traj[1:, :, 0].T, target, mask)
+        pred = traj[1:, :, 0].T
+        if self.expert_loss == "mse":
+            return _masked_mse(torch, pred, target, mask)
+        return _masked_expert_loss(
+            torch, pred, target, mask, expert_loss=self.expert_loss, scale_mgdl=self.sd,
+            target_mgdl=self.mu + target * self.sd, pred_mgdl=self.mu + pred * self.sd,
+        )
 
     def fit(self, history):
         torch = self.torch
@@ -323,17 +399,26 @@ class NHITSExpert(BaseExpert):
             val_fn = None
         else:
             val_sub = val_ends if len(val_ends) <= 256 else val_ends[-256:]
-            Xv, Yv, _ = ft.neural_windows(history, val_sub, self.input_size, h)
+            Xv, Yv, base_v = ft.neural_windows(history, val_sub, self.input_size, h)
             Yv_t = torch.as_tensor(Yv, dtype=torch.float32, device=self.device)
+            Bv_t = torch.as_tensor(base_v, dtype=torch.float32, device=self.device).unsqueeze(-1)
             Mv_t = torch.as_tensor(ft.target_mask(self.observed, val_sub, h), device=self.device)
-            val_fn = lambda: float(_masked_mse(torch, self._run(Xv), Yv_t, Mv_t))
+            def val_fn():
+                pr = self._run(Xv)
+                return float(_masked_expert_loss(
+                    torch, pr, Yv_t, Mv_t, expert_loss=self.expert_loss, scale_mgdl=ft.NEURAL_SCALE,
+                    target_mgdl=Bv_t + Yv_t * ft.NEURAL_SCALE, pred_mgdl=Bv_t + pr * ft.NEURAL_SCALE))
 
         def step_fn():
             ends = self.rng.choice(train_ends, self.batch_size)
-            Xn, Yn, _ = ft.neural_windows(history, ends, self.input_size, h)
+            Xn, Yn, base_n = ft.neural_windows(history, ends, self.input_size, h)
             M = torch.as_tensor(ft.target_mask(self.observed, ends, h), device=self.device)
-            return _masked_mse(torch, self._run(Xn),
-                               torch.as_tensor(Yn, dtype=torch.float32, device=self.device), M)
+            Yt = torch.as_tensor(Yn, dtype=torch.float32, device=self.device)
+            Bt = torch.as_tensor(base_n, dtype=torch.float32, device=self.device).unsqueeze(-1)
+            pr = self._run(Xn)
+            return _masked_expert_loss(
+                torch, pr, Yt, M, expert_loss=self.expert_loss, scale_mgdl=ft.NEURAL_SCALE,
+                target_mgdl=Bt + Yt * ft.NEURAL_SCALE, pred_mgdl=Bt + pr * ft.NEURAL_SCALE)
 
         steps = _fit_early_stopping(torch, self.net, self.opt, n_steps, val_fn, step_fn)
         self.fit_log.append(dict(t=t, n_train=len(train_ends), n_val=len(val_ends),
@@ -356,6 +441,7 @@ EXPERT_CLASSES = {
 }
 
 
-def build_experts(names, horizon, context_len, retrain_interval, seed=0):
+def build_experts(names, horizon, context_len, retrain_interval, seed=0, expert_loss="mse"):
     return {n: EXPERT_CLASSES[n](horizon=horizon, context_len=context_len,
-                                 retrain_interval=retrain_interval, seed=seed) for n in names}
+                                 retrain_interval=retrain_interval, seed=seed,
+                                 expert_loss=expert_loss) for n in names}

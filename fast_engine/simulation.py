@@ -50,7 +50,7 @@ def load_series(csv_path):
 class FastRollingSimulation:
     def __init__(self, horizon=6, context_len=-1, burn_in=None, retrain_interval=None,
                  end_step=None, experts: Optional[List[str]] = None, clip=None, seed=0,
-                 start_step=None, min_segment_history=None, max_gap_min=None):
+                 start_step=None, min_segment_history=None, max_gap_min=None, expert_loss="mse"):
         G = _defaults()
         self.horizon = int(horizon)
         self.context_len = None if (context_len is None or context_len <= 0) else int(context_len)
@@ -66,13 +66,17 @@ class FastRollingSimulation:
                                        else min_segment_history)
         self.max_gap_min = float(G.max_gap_min if max_gap_min is None else max_gap_min)
         self.grid_step_min = float(G.grid_step_min)
+        self.expert_loss = str(expert_loss)
 
     def settings(self):
-        return dict(engine_version=ENGINE_VERSION, horizon=self.horizon, context_len=self.context_len,
-                    burn_in=self.burn_in, retrain_interval=self.retrain_interval, experts=self.experts,
-                    clip=list(self.clip) if self.clip else None, seed=self.seed,
-                    grid_step_min=self.grid_step_min, max_gap_min=self.max_gap_min,
-                    min_segment_history=self.min_segment_history)
+        d = dict(engine_version=ENGINE_VERSION, horizon=self.horizon, context_len=self.context_len,
+                 burn_in=self.burn_in, retrain_interval=self.retrain_interval, experts=self.experts,
+                 clip=list(self.clip) if self.clip else None, seed=self.seed,
+                 grid_step_min=self.grid_step_min, max_gap_min=self.max_gap_min,
+                 min_segment_history=self.min_segment_history)
+        if self.expert_loss != "mse":
+            d["expert_loss"] = self.expert_loss
+        return d
 
     def _as_grid(self, X):
         from ExpMethods.timegrid import Grid
@@ -87,7 +91,8 @@ class FastRollingSimulation:
         y, valid, observed = grid.inputs, grid.valid, grid.observed
         T, h = len(grid), self.horizon
         origins = grid.origins(self.burn_in, h, self.min_segment_history, self.end_step)
-        models = build_experts(self.experts, h, self.context_len, self.retrain_interval, self.seed)
+        models = build_experts(self.experts, h, self.context_len, self.retrain_interval, self.seed,
+                               expert_loss=self.expert_loss)
         fc = {n: np.zeros(T) for n in models}
         call_s = {n: 0.0 for n in models}
         n_fail = {n: 0 for n in models}
@@ -192,11 +197,12 @@ def _worker_run_patient(task):
 
 
 def run_cohort(csv_paths, horizon=6, context_len=-1, output_dir=None, n_workers=4, skip_existing=True,
-               burn_in=None, retrain_interval=None, experts=None, end_step=None, seed=0, start_step=None):
+               burn_in=None, retrain_interval=None, experts=None, end_step=None, seed=0, start_step=None,
+               expert_loss="mse"):
     """Simulate every participant in csv_paths in parallel; returns {id: seconds}."""
     from concurrent.futures import ProcessPoolExecutor
     kw = dict(horizon=horizon, context_len=context_len, burn_in=burn_in, retrain_interval=retrain_interval,
-              experts=experts, end_step=end_step, seed=seed, start_step=start_step)
+              experts=experts, end_step=end_step, seed=seed, start_step=start_step, expert_loss=expert_loss)
     tasks = [(p, kw, output_dir, skip_existing) for p in csv_paths]
     if n_workers <= 1:
         return dict(_worker_run_patient(t) for t in tasks)

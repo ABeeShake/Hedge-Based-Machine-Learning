@@ -61,7 +61,7 @@ HORIZONS = ["half", "2", "5"]
 CONTEXTS = [72, 144, 288, -1]
 
 
-def build_condition_registry(datasets: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+def build_condition_registry(datasets: Optional[List[str]] = None, outputs_root: str = "Outputs") -> List[Dict[str, Any]]:
     """Build experimental condition registry. Default preserves canonical indices 0-23."""
     ds_list = list(datasets) if datasets else list(DATASETS)
     registry = []
@@ -78,7 +78,7 @@ def build_condition_registry(datasets: Optional[List[str]] = None) -> List[Dict[
                     "horizon_num": h_num,
                     "context_val": ctx,
                     "context_str": c_str,
-                    "output_dir": os.path.join("Outputs", ds, f"h-{h_str}hr", f"context-{c_str}hr"),
+                    "output_dir": os.path.join(outputs_root, ds, f"h-{h_str}hr", f"context-{c_str}hr"),
                 })
                 idx += 1
     return registry
@@ -177,22 +177,23 @@ def get_patient_id(path: str) -> str:
     return os.path.splitext(base)[0]
 
 
-def expected_settings(cond: Dict[str, Any], retrain_interval: Optional[int] = None) -> Dict[str, Any]:
+def expected_settings(cond: Dict[str, Any], retrain_interval: Optional[int] = None,
+                      expert_loss: str = "mse") -> Dict[str, Any]:
     """Engine settings a finished forecast file must have been produced with."""
     return FastRollingSimulation(
         horizon=cond["horizon_num"], context_len=cond["context_val"],
-        retrain_interval=retrain_interval,
+        retrain_interval=retrain_interval, expert_loss=expert_loss,
     ).settings()
 
 
 def is_patient_complete(cond_dir: str, p_id: str, retrain_interval: Optional[int] = None,
-                        cond: Optional[Dict[str, Any]] = None) -> bool:
+                        cond: Optional[Dict[str, Any]] = None, expert_loss: str = "mse") -> bool:
     """A forecast file counts as complete only if its .meta.json matches the current engine and settings
     (older forecast files, which have no metadata, are always re-run)."""
     fc_path = os.path.join(cond_dir, "forecasts", f"{p_id}_forecasts.csv")
     if cond is None:
         cond = next(c for c in build_condition_registry() if os.path.normpath(c["output_dir"]) == os.path.normpath(cond_dir))
-    return is_complete(fc_path, expected_settings(cond, retrain_interval))
+    return is_complete(fc_path, expected_settings(cond, retrain_interval, expert_loss=expert_loss))
 
 
 def list_conditions(registry: List[Dict[str, Any]]):
@@ -238,6 +239,7 @@ def run_condition(
     skip_existing: bool = True,
     debug: bool = False,
     retrain_interval: Optional[int] = None,
+    expert_loss: str = "mse",
 ):
     """Run simulation for a single experimental condition with optional patient chunking."""
     ds = cond["dataset"]
@@ -317,7 +319,7 @@ def run_condition(
     skipped_count = 0
     for f in csv_files:
         p_id = get_patient_id(f)
-        if skip_existing and is_patient_complete(cond_dir, p_id, retrain_interval, cond):
+        if skip_existing and is_patient_complete(cond_dir, p_id, retrain_interval, cond, expert_loss=expert_loss):
             skipped_count += 1
         else:
             pending_files.append(f)
@@ -339,6 +341,7 @@ def run_condition(
         skip_existing=skip_existing,
         retrain_interval=retrain_interval,
         end_step=GlobalValues.burn_in_steps + 80 if debug else None,
+        expert_loss=expert_loss,
     )
     dt = time.perf_counter() - t0
     print(f"✓ Finished {len(pending_files)} participants in {dt:.2f} s ({dt/max(len(pending_files),1):.2f} s/patient)")
@@ -418,6 +421,10 @@ def parse_args():
     parser.add_argument("--debug", action="store_true", default=False, help="Quick test mode (1 patient, 80 steps after burn-in).")
     parser.add_argument("--retrain_interval", type=int, default=None,
                         help="Steps between expert refits (default GlobalValues.retrain_interval = 288, i.e. 24 h).")
+    parser.add_argument("--expert_loss", type=str, choices=["mse", "huber20", "pinball20", "asym_hypo"],
+                        default="mse", help="Training loss for learned base experts (XGBoost, NODE, N-HITS).")
+    parser.add_argument("--outputs_root", type=str, default=None,
+                        help="Root directory for forecast outputs (defaults to Outputs, or Outputs_loss/<expert_loss> when --expert_loss != mse).")
     parser.add_argument("--list_conditions", action="store_true", default=False, help="Print status of all 24 conditions and exit.")
     
     return parser.parse_args()
@@ -425,11 +432,12 @@ def parse_args():
 
 def main():
     args = parse_args()
+    out_root = args.outputs_root or ("Outputs" if args.expert_loss == "mse" else os.path.join("Outputs_loss", args.expert_loss))
     if args.dataset and args.dataset not in ("all", "cgmacros", "weinstock"):
-        registry = build_condition_registry(datasets=[args.dataset])
+        registry = build_condition_registry(datasets=[args.dataset], outputs_root=out_root)
         default_spec = f"0-{len(registry) - 1}"
     else:
-        registry = build_condition_registry()
+        registry = build_condition_registry(outputs_root=out_root)
         default_spec = "0-23"
     
     if args.list_conditions:
@@ -487,6 +495,7 @@ def main():
                 skip_existing=args.skip_existing,
                 debug=args.debug,
                 retrain_interval=args.retrain_interval,
+                expert_loss=args.expert_loss,
             )
             return
         else:
@@ -534,6 +543,7 @@ def main():
             skip_existing=args.skip_existing,
             debug=args.debug,
             retrain_interval=args.retrain_interval,
+            expert_loss=args.expert_loss,
         )
 
 

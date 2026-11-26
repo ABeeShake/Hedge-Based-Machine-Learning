@@ -167,8 +167,8 @@ def build_external_validation_fig():
 \addlegendentry{Best expert (ARIMA)}
 \addplot[hbmlgrey, dotted, mark=triangle*, mark size=1.8pt, line width=1.1pt] coordinates {""" + " ".join(f"({x:.3f},{y:.2f})" for x, y in curves["Persistence"]) + r"""};
 \addlegendentry{Persistence}
-\node[anchor=south east, font=\tiny, fill=white, fill opacity=0.9, text opacity=1, inner sep=2pt, draw=black!20] at (axis cs:1.02,4)
-  {\shortstack[r]{\textbf{At 1.0/day:} HBML $+11.9$~pp vs ARIMA\\(95\% CI $[+4.7,+19.2]$)}};
+\node[anchor=south east, font=\tiny, fill=white, fill opacity=0.92, text opacity=1, inner sep=2pt, draw=black!20] at (axis cs:1.02,4)
+  {\shortstack[r]{\textbf{At 1.0/day:}\\HBML $+11.9$~pp vs ARIMA\\$-0.7$~pp vs Persistence}};
 \end{axis}
 \end{tikzpicture}
 \end{document}

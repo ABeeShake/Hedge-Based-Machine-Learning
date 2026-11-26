@@ -416,7 +416,7 @@ def generate_latex_table(df_best, output_tex):
               r"\caption{\textbf{Participant-level paired comparisons and TOST equivalence between HBML and the best constituent expert.} "
               r"For each configuration, the best expert is the constituent model with the lowest cohort mean RMSE across the $N$ retained participants. "
               r"$\Delta = \text{RMSE}_{\text{best}} - \text{RMSE}_{\text{HBML}}$ (mg/dL) is computed per participant; "
-              r"positive values favour HBML and negative values favour the expert. Mean 95\% confidence intervals use BCa bootstrap "
+              r"positive values favor HBML and negative values favor the expert. Mean 95\% confidence intervals use BCa bootstrap "
               r"(10,000 resamples); HL est.\ reports the exact Hodges--Lehmann pseudomedian of paired differences with its "
               r"95\% Walsh interval (assuming symmetry of the paired differences). $p$: two-sided paired Wilcoxon signed-rank test; $p_{\mathrm{BH}}$: Benjamini--Hochberg "
               r"adjustment across the configurations shown (zero differences dropped; exact null for $N \le 50$ without ties, otherwise normal approximation). "

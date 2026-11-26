@@ -981,20 +981,20 @@ def write_hypo_tex(rows, out_path, supplement=False):
         )
     if supplement:
         cap = (
-            r"\caption{\textbf{Descriptive 2-hour and 5-hour pre-onset hypoglycaemia ($<70$~mg/dL) detection metrics and Parkes consensus error grid performance (full-history context).} "
+            r"\caption{\textbf{Descriptive 2-hour and 5-hour pre-onset hypoglycemia ($<70$~mg/dL) detection metrics and Parkes consensus error grid performance (full-history context).} "
             r"Descriptive long-horizon extension of Table~\ref{tab:hypoglycemia_events}. Notice that reactive persistence alerts targeting 2--5~hours ahead reflect recurrent low readings hours before a subsequent episode rather than active predictive anticipation. "
             r"Metrics follow Table~\ref{tab:hypoglycemia_events}.}"
         )
         lbl = r"\label{tab:hypoglycemia_events_supp}"
     else:
         cap = (
-            r"\caption{\textbf{30-minute pre-onset hypoglycaemia ($<70$~mg/dL) episode detection and Parkes consensus error grid performance (full-history context).} "
-            r"True hypoglycaemic episodes are runs of $\ge 3$ real readings ($15$~min) below $70$~mg/dL on the full observed trajectory, merged when $<30$~min apart, across the $N$ retained participants; "
+            r"\caption{\textbf{30-minute pre-onset hypoglycemia ($<70$~mg/dL) episode detection and Parkes consensus error grid performance (full-history context).} "
+            r"True hypoglycemic episodes are runs of $\ge 3$ real readings ($15$~min) below $70$~mg/dL on the full observed trajectory, merged when $<30$~min apart, across the $N$ retained participants; "
             r"left-censored episodes (no reading $\ge 70$~mg/dL in the preceding 30~min) and episodes with no forecast issued before onset are excluded from ``Episodes''. "
             r"Pre-onset episode sensitivity counts episodes detected (one-to-one, by the earliest alert) by a forecast below 70~mg/dL issued strictly before onset ($t_{\text{issue}} = t - h < t_{\text{start}}$). "
             + (r"``Chance sens.'' and ``Above chance'' report expected pre-onset sensitivity under circular time-shifted alerts within each participant and the net gain over chance in percentage points. " if has_chance else "")
             + r"``Lead (all, min)'' reports the unconditional mean warning time prior to episode onset across all episodes (counting missed episodes as $0$~min), whereas ``Lead (det., min)'' averages over detected episodes. "
-            r"Point PPV and $F_1$ evaluate timestep-level hypoglycaemia classification; Cluster PPV reports the percentage of 30-min merged alert clusters coinciding with a real reading $<70$~mg/dL within $\pm 10$~min; false alerts per scored participant-day (and per elapsed calendar day, FAR / cal.\ day) count uncorroborated alert clusters; "
+            r"Point PPV and $F_1$ evaluate timestep-level hypoglycemia classification; Cluster PPV reports the percentage of 30-min merged alert clusters coinciding with a real reading $<70$~mg/dL within $\pm 10$~min; false alerts per scored participant-day (and per elapsed calendar day, FAR / cal.\ day) count uncorroborated alert clusters; "
             r"and Parkes A+B reports participant-averaged proportions in Zones A and B using the Parkes Type 2 grid for CGMacros participants with type 2 diabetes and the Type 1 grid otherwise. (Descriptive 2- and 5-hour metrics appear in Supplementary Table~\ref{tab:hypoglycemia_events_supp}.)}"
         )
         lbl = r"\label{tab:hypoglycemia_events}"
@@ -1006,18 +1006,19 @@ def write_hypo_tex(rows, out_path, supplement=False):
 def write_regime_tex(rows, out_path):
     ds_disp = {"weinstock": "Weinstock 2016", "cgmacros": "CGMacros"}
     reg_disp = {
-        "STABLE": "Stable Euglycaemia",
+        "STABLE": "Stable Euglycemia",
         "STABLE_OOR": "Stable Out-of-Range",
         "RISING": "Rising Excursion",
         "FALLING": "Falling Excursion",
         "HIGHVAR": "High Variability",
         "RECOVERY": "Recovery Phase",
-        "HYPO_TRANS": "Hypoglycaemic Transition",
+        "HYPO_TRANS": "Hypoglycemic Transition",
     }
     lines = [
         r"\begin{table*}[t]",
         r"\centering",
         r"\scriptsize",
+        r"\resizebox{\linewidth}{!}{%",
         r"\begin{tabular}{llccccc}",
         r"\toprule",
         r"Dataset & Operational regime & $N$ & Timestep share (\%) & HBML RMSE (mg/dL) & Best expert (RMSE, mg/dL) & Most frequent instantaneous winner (share, \%) \\",
@@ -1037,9 +1038,10 @@ def write_regime_tex(rows, out_path):
         )
     lines += [
         r"\bottomrule",
-        r"\end{tabular}",
-        r"\caption{\textbf{Forecasting accuracy and expert selection frequency across operational glycaemic regimes (30-minute horizon, full-history context).} "
-        r"Scored timesteps are partitioned into seven mutually exclusive operational regimes in priority order (slow-moving glucose outside 70--180~mg/dL is Stable Out-of-Range, not Stable Euglycaemia). "
+        r"\end{tabular}%",
+        r"}",
+        r"\caption{\textbf{Forecasting accuracy and expert selection frequency across operational glycemic regimes (30-minute horizon, full-history context).} "
+        r"Scored timesteps are partitioned into seven mutually exclusive operational regimes in priority order (slow-moving glucose outside 70--180~mg/dL is Stable Out-of-Range, not Stable Euglycemia). "
         r"Columns report the number of participants $N$ contributing timesteps in each regime, the percentage of scored timesteps in each regime, cohort-mean participant-level RMSE for HBML and for the lowest-RMSE single expert in that regime, and the most frequent instantaneous winner: the constituent expert with the lowest instantaneous squared error at the largest share of timesteps in that regime (a property of the experts, not of HBML's weights).}",
         r"\label{tab:regime_summary}",
         r"\end{table*}",
