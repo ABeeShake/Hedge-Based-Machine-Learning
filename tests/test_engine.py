@@ -361,6 +361,30 @@ def test_ohiot1dm_preparation_and_registry():
         assert [v for _, v in pts] == [110.0, 115.0, 120.0]
 
 
+def test_glucobench_preparation():
+    import io
+    import tempfile
+    import zipfile
+    import prepare_glucobench as pgb
+    from run_simulation_chunk import build_condition_registry
+    with tempfile.TemporaryDirectory() as tmp:
+        zip_path = os.path.join(tmp, "raw_data.zip")
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("raw_data/hall.csv",
+                        "id,time,gl,diagnosis\n"
+                        "sub-b,2014-02-01 00:05:00,112.0,2\n"
+                        "sub-a,2014-02-01 00:00:00,95.0,0\n"
+                        "sub-a,2014-02-01 00:05:00,,0\n")
+            zf.writestr("raw_data/dubosson.csv",
+                        "id,time,gl\n"
+                        "2.0,2014-10-01 19:14:00,185.4\n")
+        res = pgb.prepare_glucobench(["hall", "dubosson"], zip_path=zip_path, output_root=tmp)
+        assert len(res["hall"]) == 2 and res["hall"][0]["diagnosis"] == "normoglycemic"
+        assert res["hall"][1]["diagnosis"] == "T2D" and res["hall"][1]["pid"] == "002"
+        assert len(res["dubosson"]) == 1 and res["dubosson"][0]["diagnosis"] == "T1D"
+        assert len(build_condition_registry(["hall"])) == 12
+
+
 def test_validation_and_external_scripts_synthetic():
     import csv
     import json

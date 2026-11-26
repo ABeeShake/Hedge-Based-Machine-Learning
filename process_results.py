@@ -20,7 +20,13 @@ from ExpMethods.simulate import (
 )
 
 # ---- Shared Plot Formatting Helpers ----
-_DATASET_DISPLAY = {"weinstock": "Weinstock", "cgmacros": "CGMacros", "ohiot1dm": "OhioT1DM"}
+_DATASET_DISPLAY = {
+    "weinstock": "Weinstock",
+    "cgmacros": "CGMacros",
+    "ohiot1dm": "OhioT1DM",
+    "hall": "Hall 2018",
+    "dubosson": "Dubosson (D1NAMO)",
+}
 _HORIZON_DISPLAY = {"half": "0.5", "0.5": "0.5", "2": "2", "5": "5"}
 
 def fmt_dataset(d):
@@ -299,7 +305,7 @@ def main():
         dataset_name = os.path.basename(norm_data_dir)
         cand_main = os.path.dirname(os.path.dirname(os.path.normpath(args.output_dir)))
         main_dir = cand_main if os.path.exists(cand_main) else "."
-    known_datasets = ("weinstock", "cgmacros", "ohiot1dm")
+    known_datasets = ("weinstock", "cgmacros", "ohiot1dm", "hall", "dubosson")
     if dataset_name not in known_datasets:
         for ds_cand in known_datasets:
             if ds_cand in args.output_dir.lower() or ds_cand in data_dir.lower():

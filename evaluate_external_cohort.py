@@ -55,8 +55,23 @@ def write_csv(path, rows):
         w.writerows(rows)
 
 
+def load_diabetes_types(dataset: str, root: str = BASE_DIR):
+    """Map participant pid -> Parkes grid diabetes type (2 if manifest flags T2D, else 1)."""
+    types = {}
+    manifest = os.path.join(root, dataset, f"{dataset}_manifest.csv")
+    if not os.path.exists(manifest):
+        return types
+    with open(manifest, newline="") as f:
+        for r in csv.DictReader(f):
+            pid = (r.get("pid") or "").strip()
+            diag = (r.get("diagnosis") or "").strip().lower()
+            types[pid] = 2 if ("t2d" in diag or diag == "2") else 1
+    return types
+
+
 def evaluate_cohort(dataset: str, outputs_dir: str, out_dir: str, n_boot_stat: int = 10000, n_boot_mech: int = 2000):
     os.makedirs(out_dir, exist_ok=True)
+    diabetes_types = load_diabetes_types(dataset, root=ev.ROOT)
     rmse_rows = []
     rmse_summary_rows = []
     stat_all_rows = []
@@ -220,7 +235,8 @@ def evaluate_cohort(dataset: str, outputs_dir: str, out_dir: str, n_boot_stat: i
                     cens_tot = noeval_tot = n_p_ep = 0
                     det_w = Counter()
                     for r in p_res:
-                        ev_r = ecw.evaluate_hypo_trajectory(r["y"], get_pred(r), r["scored_mask"], h_steps, diabetes_type=1)
+                        dtype = diabetes_types.get(r["pid"], 1)
+                        ev_r = ecw.evaluate_hypo_trajectory(r["y"], get_pred(r), r["scored_mask"], h_steps, diabetes_type=dtype)
                         if not ev_r:
                             continue
                         cens_tot += ev_r["n_episodes_left_censored"]
