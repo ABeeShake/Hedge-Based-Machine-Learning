@@ -52,11 +52,11 @@ methods_outline.md
 results_outline.md
 
 # Data files
-cgmacros/
-weinstock/
-hall/
-dubosson/
-ohiot1dm/
+/cgmacros/
+/weinstock/
+/hall/
+/dubosson/
+/ohiot1dm/
 
 # Results files
 rmse.csv
