@@ -117,12 +117,16 @@ def tost_equivalence(d, margin):
         w_tost = max(p1, p2)
     except Exception:
         w_tost = np.nan
-    try:
-        tp1 = float(ttest_1samp(d + margin, 0.0, alternative="greater").pvalue)
-        tp2 = float(ttest_1samp(d - margin, 0.0, alternative="less").pvalue)
-        t_tost = max(tp1, tp2)
-    except Exception:
+    if np.allclose(d, d[0], rtol=1e-12, atol=1e-12):
+        # Zero-variance paired differences trigger division-by-zero in scipy ttest_1samp.
         t_tost = np.nan
+    else:
+        try:
+            tp1 = float(ttest_1samp(d + margin, 0.0, alternative="greater").pvalue)
+            tp2 = float(ttest_1samp(d - margin, 0.0, alternative="less").pvalue)
+            t_tost = max(tp1, tp2)
+        except Exception:
+            t_tost = np.nan
     return w_tost, t_tost
 
 
@@ -237,22 +241,29 @@ def paired_stats(ex, hb, n_boot=10000):
     hl_est, hl_lo, hl_hi = hodges_lehmann_ci(d)
     tost_w_p, tost_t_p = tost_equivalence(d, EQUIV_MARGIN_MGDL)
     tost_boot_p, tost_boot_lo, tost_boot_hi = bootstrap_tost(d, EQUIV_MARGIN_MGDL, n_boot)
-    rel = d / ex
+    rel = np.divide(d, ex, out=np.full_like(d, np.nan), where=np.abs(ex) > 1e-12)
     tost_rel5_p, rel5_lo, rel5_hi = bootstrap_tost(rel, 0.05, n_boot)
     try:
         w = wilcoxon(ex, hb, alternative="two-sided", zero_method="wilcox", method="auto")
         w_stat, w_p = float(w.statistic), float(w.pvalue)
     except Exception:
         w_stat, w_p = np.nan, np.nan
-    try:
-        t = ttest_rel(ex, hb)
-        t_stat, t_p = float(t.statistic), float(t.pvalue)
-    except Exception:
+    is_const = (n < 2) or bool(np.allclose(d, d[0], rtol=1e-12, atol=1e-12))
+    if is_const:
         t_stat, t_p = np.nan, np.nan
-    try:
-        sw_p = float(shapiro(d).pvalue)
-    except Exception:
         sw_p = np.nan
+    else:
+        try:
+            t = ttest_rel(ex, hb)
+            t_stat, t_p = float(t.statistic), float(t.pvalue)
+        except Exception:
+            t_stat, t_p = np.nan, np.nan
+        try:
+            sw_p = float(shapiro(d).pvalue)
+        except Exception:
+            sw_p = np.nan
+    ex_mean = float(ex.mean())
+    rel_red_pct = (100.0 * float(ex_mean - float(hb.mean())) / ex_mean) if abs(ex_mean) > 1e-12 else np.nan
     n_imp = int((d > TIE_TOL).sum())
     n_worse = int((d < -TIE_TOL).sum())
     return dict(
@@ -260,7 +271,7 @@ def paired_stats(ex, hb, n_boot=10000):
         hbml_mean=float(hb.mean()), hbml_sd=float(hb.std(ddof=1)) if n > 1 else np.nan,
         hbml_median=float(np.median(hb)),
         hbml_iqr=float(np.percentile(hb, 75) - np.percentile(hb, 25)),
-        expert_mean=float(ex.mean()), expert_sd=float(ex.std(ddof=1)) if n > 1 else np.nan,
+        expert_mean=ex_mean, expert_sd=float(ex.std(ddof=1)) if n > 1 else np.nan,
         expert_median=float(np.median(ex)),
         expert_iqr=float(np.percentile(ex, 75) - np.percentile(ex, 25)),
         paired_diff_mean=float(d.mean()),
@@ -273,14 +284,14 @@ def paired_stats(ex, hb, n_boot=10000):
         tost_margin_mgdl=EQUIV_MARGIN_MGDL, tost_wilcoxon_p=tost_w_p, tost_ttest_p=tost_t_p,
         tost_boot_p=tost_boot_p, tost_boot_ci90_low=tost_boot_lo, tost_boot_ci90_high=tost_boot_hi,
         equiv_boot=bool(np.isfinite(tost_boot_p) and tost_boot_p < ALPHA),
-        tost_rel5_p=tost_rel5_p, rel_diff_mean_pct=100.0 * float(np.mean(rel)),
+        tost_rel5_p=tost_rel5_p, rel_diff_mean_pct=100.0 * float(np.nanmean(rel)) if np.any(np.isfinite(rel)) else np.nan,
         rel5_ci90_low_pct=100.0 * rel5_lo, rel5_ci90_high_pct=100.0 * rel5_hi,
         equiv_wilcoxon=bool(np.isfinite(tost_w_p) and tost_w_p < ALPHA),
         ttest_t=t_stat, ttest_df=n - 1, ttest_p=t_p,
         shapiro_p=sw_p,
         n_improved=n_imp, n_tied=n - n_imp - n_worse, n_worse=n_worse,
         pct_improved=100.0 * n_imp / n, pct_worse=100.0 * n_worse / n,
-        rel_reduction_pct=100.0 * float(ex.mean() - hb.mean()) / float(ex.mean()),
+        rel_reduction_pct=rel_red_pct,
     )
 
 

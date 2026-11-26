@@ -81,6 +81,7 @@ fs_comparison/per_participant.csv
 # misc
 slurm_logs/
 *.slurm
+!slurm/*.slurm
 HBMLAudit.html
 Outputs_v*/
 Outputs_archive/

@@ -46,11 +46,11 @@ echo "Submitting $TOTAL_TASKS grid tasks (0-${LAST_TASK}%16) for $DATASET..."
 SIM_JOB=$(sbatch --parsable \
   --array="0-${LAST_TASK}%16" \
   --export="ALL,DATASET=${DATASET},CONDITIONS=${CONDITIONS},CHUNK_SIZE=${CHUNK_SIZE}" \
-  slurm/run_ohiot1dm_sim_array.slurm)
+  slurm/run_external_sim_array.slurm)
 echo "Submitted simulation array: $SIM_JOB"
 
 POST_JOB=$(sbatch --parsable \
   --dependency="afterok:${SIM_JOB}" \
   --export="ALL,DATASET=${DATASET}" \
-  slurm/run_ohiot1dm_post.slurm)
+  slurm/run_external_post.slurm)
 echo "Submitted dependent post-processing & report job: $POST_JOB"

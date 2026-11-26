@@ -42,14 +42,23 @@ fi
 LAST_TASK=$((TOTAL_TASKS - 1))
 echo "Submitting $TOTAL_TASKS grid tasks (0-${LAST_TASK}%16) for $DATASET..."
 
+SIM_SLURM="slurm/run_external_sim_array.slurm"
+POST_SLURM="slurm/run_external_post.slurm"
+for f in "$SIM_SLURM" "$POST_SLURM"; do
+    if [ ! -f "$f" ]; then
+        echo "Error: missing required SLURM file $f"
+        exit 1
+    fi
+done
+
 SIM_JOB=$(sbatch --parsable \
   --array="0-${LAST_TASK}%16" \
   --export="ALL,DATASET=${DATASET},CONDITIONS=${CONDITIONS},CHUNK_SIZE=${CHUNK_SIZE}" \
-  slurm/run_ohiot1dm_sim_array.slurm)
+  "$SIM_SLURM")
 echo "Submitted simulation array: $SIM_JOB"
 
 POST_JOB=$(sbatch --parsable \
   --dependency="afterok:${SIM_JOB}" \
   --export="ALL,DATASET=${DATASET}" \
-  slurm/run_ohiot1dm_post.slurm)
+  "$POST_SLURM")
 echo "Submitted dependent post-processing & report job: $POST_JOB"

@@ -408,13 +408,14 @@ def test_validation_and_external_scripts_synthetic():
                     w.writerow([pid, ts, f"{y_vals[i]:.1f}"])
         fc_dir = os.path.join(tmp, "Outputs", ds, "h-halfhr", "context-fullhr", "forecasts")
         os.makedirs(fc_dir, exist_ok=True)
-        for pid in ("001", "002", "003", "004", "005", "006"):
+        for pid_idx, pid in enumerate(("001", "002", "003", "004", "005", "006")):
             fc_path = os.path.join(fc_dir, f"{pid}_forecasts.csv")
             with open(fc_path, "w", newline="") as f:
                 w = csv.writer(f)
                 w.writerow(list(G.experts))
+                scale = 1.0 + 0.15 * pid_idx
                 for i in range(n_rows):
-                    vals = [0.0 if i < 294 else round(float(y_vals[i] + k), 2) for k in range(len(G.experts))]
+                    vals = [0.0 if i < 294 else round(float(y_vals[i] + scale * (k + 1)), 2) for k in range(len(G.experts))]
                     w.writerow(vals)
             from fast_engine.simulation import ENGINE_VERSION
             meta = {
@@ -445,6 +446,17 @@ def test_validation_and_external_scripts_synthetic():
                     assert os.path.exists(os.path.join(ext_out, fn)), fn
         finally:
             val.BASE_DIR, ext.BASE_DIR, ev.ROOT = orig_base_val, orig_base_ext, orig_root_ev
+    # Constant/zero paired differences must not trigger scipy division-by-zero or moment warnings
+    import warnings
+    import calculate_statistics as cstat
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        st = cstat.paired_stats(np.full(8, 10.0), np.full(8, 10.0), n_boot=50)
+        assert np.isnan(st["ttest_p"]) and np.isnan(st["shapiro_p"])
+    scipy_warns = [w for w in caught if issubclass(w.category, (RuntimeWarning, UserWarning))
+                   and ("moment calculation" in str(w.message) or "divide by zero" in str(w.message).lower()
+                        or "range zero" in str(w.message).lower())]
+    assert not scipy_warns, [str(w.message) for w in scipy_warns]
 
 
 if __name__ == "__main__":
