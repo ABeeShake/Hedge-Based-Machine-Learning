@@ -290,6 +290,139 @@ def test_simplex_ls_fixed_weights():
     w = simplex_ls(F, y)
     assert abs(w.sum() - 1) < 1e-9 and np.all(w >= 0) and w[2] < 0.05 and w[0] > w[1]
 
+
+def test_interleaved_hedge_and_mechanism_variants():
+    from analyze_pool_mechanism import participant_variants
+    rng = np.random.default_rng(12)
+    T = 450
+    h = 6
+    start = 288
+    y = series(T, seed=2)
+    F = np.zeros((T, len(G.experts)), dtype=float)
+    for j in range(len(G.experts)):
+        F[start + h:, j] = y[start + h:] + rng.normal(0, 4.0 + 3.0 * j, T - start - h)
+    L = agg.online_losses(F, y, start, h)
+    pred_i, loss_i = agg.run_interleaved_hedge(G.primary_hbml, F, L, y, start=start, horizon=h)
+    # Causality check: modifying targets >= k must not change forecasts strictly before k + h
+    y2 = y.copy()
+    y2[360:] += 400.0
+    L2 = agg.online_losses(F, y2, start, h)
+    pred_i2, _ = agg.run_interleaved_hedge(G.primary_hbml, F, L2, y2, start=start, horizon=h)
+    assert np.allclose(pred_i[:360 + h], pred_i2[:360 + h])
+    assert np.isfinite(ev.rmse(loss_i, ev.scored_mask(F, y)))
+    mask = ev.scored_mask(F, y)
+    res = participant_variants(F, y, list(G.experts), mask, h)
+    for key in ("HBML", "HBML-interleaved", "Uniform", "HBML-no-reference", "HBML-shortctx-pool", "Expert-ARIMA"):
+        assert key in res and np.isfinite(res[key]), key
+
+
+def test_cluster_ppv_and_calendar_far():
+    import evaluate_clinical_and_weights as ecw
+    n = 400
+    y = np.full(n, 130.0)
+    y[220:226] = 62.0  # true hypo cluster around 220..225
+    mask = np.ones(n, dtype=bool)
+    mask[:30] = False
+    pred = np.full(n, 130.0)
+    pred[219] = 66.0   # true alert cluster (within +-2 slots of y[220])
+    pred[330] = 66.0   # false alert cluster
+    r = ecw.evaluate_hypo_trajectory(y, pred, mask, h=6, n_chance_shifts=0)
+    assert abs(r["days_calendar"] - n / 288.0) < 1e-9
+    assert r["n_alert_clusters"] == 2
+    assert r["true_clusters"] == 1
+    assert r["false_clusters"] == 1
+
+
+def test_ohiot1dm_preparation_and_registry():
+    import tempfile
+    import prepare_ohiot1dm as prep
+    from run_simulation_chunk import build_condition_registry
+    reg_default = build_condition_registry()
+    assert len(reg_default) == 24
+    reg_ohio = build_condition_registry(["ohiot1dm"])
+    assert len(reg_ohio) == 12 and all(c["dataset"] == "ohiot1dm" for c in reg_ohio)
+    with tempfile.TemporaryDirectory() as tmp:
+        raw_dir = os.path.join(tmp, "raw", "2020")
+        out_dir = os.path.join(tmp, "ohiot1dm")
+        os.makedirs(raw_dir, exist_ok=True)
+        with open(os.path.join(raw_dir, "540-ws-training.xml"), "w") as f:
+            f.write("<patient id='540'><glucose_level>"
+                    "<event ts='01-01-2020 00:00:00' value='110'/>"
+                    "<event ts='01-01-2020 00:05:00' value='115'/>"
+                    "</glucose_level></patient>")
+        with open(os.path.join(raw_dir, "540-ws-testing.xml"), "w") as f:
+            f.write("<patient id='540'><glucose_level>"
+                    "<event ts='01-01-2020 00:10:00' value='120'/>"
+                    "</glucose_level></patient>")
+        rows = prep.prepare_ohiot1dm(os.path.join(tmp, "raw"), out_dir, split="combined")
+        assert len(rows) == 1 and rows[0]["pid"] == "001" and rows[0]["source_id"] == "540"
+        assert rows[0]["cohort_year"] == "2020" and rows[0]["n_points"] == 3
+        pts = prep.parse_ohio_csv(os.path.join(out_dir, "001.csv"))
+        assert [v for _, v in pts] == [110.0, 115.0, 120.0]
+
+
+def test_validation_and_external_scripts_synthetic():
+    import csv
+    import json
+    import tempfile
+    import evaluate_external_cohort as ext
+    import validate_engine_outputs as val
+    with tempfile.TemporaryDirectory() as tmp:
+        ds = "mockcohort"
+        ds_dir = os.path.join(tmp, ds)
+        os.makedirs(ds_dir, exist_ok=True)
+        n_rows = 700
+        t0 = np.datetime64("2021-01-01T00:00:00")
+        y_vals = 135.0 + 25.0 * np.sin(np.arange(n_rows) * 0.05)
+        y_vals[400:406] = 63.0
+        for pid in ("001", "002", "003", "004", "005", "006"):
+            with open(os.path.join(ds_dir, f"{pid}.csv"), "w", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(["id", "Timestamp", "Dexcom.GL"])
+                for i in range(n_rows):
+                    ts = (t0 + np.timedelta64(5 * i, "m")).astype(str).replace("T", " ")
+                    w.writerow([pid, ts, f"{y_vals[i]:.1f}"])
+        fc_dir = os.path.join(tmp, "Outputs", ds, "h-halfhr", "context-fullhr", "forecasts")
+        os.makedirs(fc_dir, exist_ok=True)
+        for pid in ("001", "002", "003", "004", "005", "006"):
+            fc_path = os.path.join(fc_dir, f"{pid}_forecasts.csv")
+            with open(fc_path, "w", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(list(G.experts))
+                for i in range(n_rows):
+                    vals = [0.0 if i < 294 else round(float(y_vals[i] + k), 2) for k in range(len(G.experts))]
+                    w.writerow(vals)
+            from fast_engine.simulation import ENGINE_VERSION
+            meta = {
+                "settings": {"engine_version": ENGINE_VERSION},
+                "timings": {"NHITS": {"n_fits": 3, "n_fallback": 0, "fit_windows_train_median": 120.0,
+                                      "fit_windows_train_min": 80, "fit_windows_val_median": 24.0,
+                                      "n_fits_without_early_stopping": 0}},
+            }
+            with open(fc_path.replace(".csv", ".meta.json"), "w") as mf:
+                json.dump(meta, mf)
+        orig_base_val, orig_base_ext, orig_root_ev = val.BASE_DIR, ext.BASE_DIR, ev.ROOT
+        try:
+            fit_rows = val.summarize_fit_windows([ds], os.path.join(tmp, "Outputs"))
+            assert len(fit_rows) == 1 and fit_rows[0]["total_refits"] == 18
+            import ExpMethods.timegrid as tg
+            if hasattr(tg.pd, "read_csv"):
+                val.BASE_DIR = tmp
+                ext.BASE_DIR = tmp
+                ev.ROOT = tmp
+                val_out = os.path.join(tmp, "Outputs", "validation")
+                ext_out = os.path.join(tmp, "Outputs", "external", ds)
+                val.run_validation([ds], os.path.join(tmp, "Outputs"), val_out, n_boot=50)
+                ext.evaluate_cohort(ds, os.path.join(tmp, "Outputs"), ext_out, n_boot_stat=50, n_boot_mech=50)
+                for fn in ("validation_fit_windows.csv", "validation_cohort_sensitivity.csv", "validation_gap_burden.csv"):
+                    assert os.path.exists(os.path.join(val_out, fn)), fn
+                for fn in ("rmse_summary.csv", "statistical_tests_best_expert.csv", "clinical_hypo.csv",
+                           "pool_mechanism_summary.csv", "external_report.md"):
+                    assert os.path.exists(os.path.join(ext_out, fn)), fn
+        finally:
+            val.BASE_DIR, ext.BASE_DIR, ev.ROOT = orig_base_val, orig_base_ext, orig_root_ev
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

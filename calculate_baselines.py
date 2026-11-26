@@ -245,8 +245,7 @@ def generate_latex_table(df, output_tex):
               r"persistence ($\hat{y}_{t+h} = y_t$), the expanding-window running participant mean ($\hat{y}_{t+h} = \bar{y}_{\mathcal{V}_t}$), an "
               r"equally weighted average of the seven constituent experts, the best constituent expert (lowest cohort mean RMSE), and "
               r"HBML. All methods are scored on the same participants and time points. Bold marks the lowest value in "
-              r"each row. The last column is the relative RMSE change of HBML against persistence (positive: HBML lower). "
-              r"Dashes mark configurations that could not be evaluated.}",
+              r"each row. The last column is the relative RMSE change of HBML against persistence (positive: HBML lower).}",
               r"\label{tab:baselines_comparison}", r"\end{table*}"]
     with open(output_tex, "w") as f:
         f.write("\n".join(lines) + "\n")

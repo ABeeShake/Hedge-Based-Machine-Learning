@@ -61,11 +61,12 @@ HORIZONS = ["half", "2", "5"]
 CONTEXTS = [72, 144, 288, -1]
 
 
-def build_condition_registry() -> List[Dict[str, Any]]:
-    """Build the canonical 24 experimental condition list."""
+def build_condition_registry(datasets: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """Build experimental condition registry. Default preserves canonical indices 0-23."""
+    ds_list = list(datasets) if datasets else list(DATASETS)
     registry = []
     idx = 0
-    for ds in DATASETS:
+    for ds in ds_list:
         for h_str in HORIZONS:
             h_num = HORIZON_MAP[h_str]
             for ctx in CONTEXTS:
@@ -161,8 +162,11 @@ def build_grid_tasks(
 def get_dataset_csv_files(dataset: str) -> List[str]:
     """Return sorted list of valid participant CSV files for dataset, excluding summary tables."""
     files = sorted(glob.glob(os.path.join(dataset, "*.csv")))
-    # Exclude non-patient master/summary CSVs like weinstock/weinstock.csv or cgmacros/cgmacros.csv
-    return [f for f in files if os.path.basename(f) != f"{dataset}.csv"]
+    # Exclude non-patient master/summary CSVs like weinstock/weinstock.csv or *_manifest.csv
+    return [
+        f for f in files
+        if os.path.basename(f) != f"{dataset}.csv" and not os.path.basename(f).endswith("_manifest.csv")
+    ]
 
 
 def get_patient_id(path: str) -> str:
@@ -364,7 +368,8 @@ def parse_args():
         default=None,
         help="Condition index (0-23). Defaults to SLURM_ARRAY_TASK_ID environment variable if set.",
     )
-    parser.add_argument("--dataset", type=str, choices=["cgmacros", "weinstock", "all"], default=None, help="Filter by dataset.")
+    parser.add_argument("--dataset", type=str, default=None,
+                        help="Filter or select dataset (e.g. 'cgmacros', 'weinstock', 'ohiot1dm', or 'all').")
     parser.add_argument("--horizon", type=str, choices=["half", "2", "5", "all"], default=None, help="Filter by horizon.")
     parser.add_argument("--context", type=int, choices=[72, 144, 288, -1], default=None, help="Filter by context length.")
     
@@ -420,7 +425,12 @@ def parse_args():
 
 def main():
     args = parse_args()
-    registry = build_condition_registry()
+    if args.dataset and args.dataset not in ("all", "cgmacros", "weinstock"):
+        registry = build_condition_registry(datasets=[args.dataset])
+        default_spec = f"0-{len(registry) - 1}"
+    else:
+        registry = build_condition_registry()
+        default_spec = "0-23"
     
     if args.list_conditions:
         list_conditions(registry)
@@ -431,14 +441,14 @@ def main():
     cond_spec = args.conditions if args.conditions is not None else os.environ.get("CONDITIONS")
 
     if args.count_grid_tasks:
-        grid = build_grid_tasks(conditions_spec=cond_spec or "0-23", chunk_size=chunk_sz, registry=registry)
+        grid = build_grid_tasks(conditions_spec=cond_spec or default_spec, chunk_size=chunk_sz, registry=registry)
         print(len(grid))
         return
 
     if args.list_grid:
-        grid = build_grid_tasks(conditions_spec=cond_spec or "0-23", chunk_size=chunk_sz, registry=registry)
+        grid = build_grid_tasks(conditions_spec=cond_spec or default_spec, chunk_size=chunk_sz, registry=registry)
         print("=" * 105)
-        print(f"Unified 2D Grid: {len(grid)} total tasks for conditions [{cond_spec or '0-23'}] with chunk size {chunk_sz}")
+        print(f"Unified 2D Grid: {len(grid)} total tasks for conditions [{cond_spec or default_spec}] with chunk size {chunk_sz}")
         print("=" * 105)
         print(f"{'Task':<6} {'Cond':<5} {'Dataset':<10} {'Horizon':<8} {'Context':<8} {'Chunk':<12} {'Patient Slice':<16} {'Count':<6}")
         print("-" * 105)
@@ -460,7 +470,7 @@ def main():
             pass
 
     if grid_task_id is not None:
-        grid = build_grid_tasks(conditions_spec=cond_spec or "0-23", chunk_size=chunk_sz, registry=registry)
+        grid = build_grid_tasks(conditions_spec=cond_spec or default_spec, chunk_size=chunk_sz, registry=registry)
         if 0 <= grid_task_id < len(grid):
             task_info = grid[grid_task_id]
             print(f"==============================================================================")

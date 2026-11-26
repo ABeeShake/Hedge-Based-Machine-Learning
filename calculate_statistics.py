@@ -58,7 +58,7 @@ TIE_TOL = 1e-3
 
 
 def hodges_lehmann_ci(d, alpha=ALPHA):
-    """Exact paired Hodges-Lehmann pseudomedian and distribution-free Walsh 95% CI."""
+    """Exact paired Hodges-Lehmann pseudomedian and symmetric-difference Walsh 95% CI."""
     d = np.asarray(d, dtype=float)
     d = d[np.isfinite(d)]
     n = len(d)
@@ -224,6 +224,66 @@ def tex_p(p):
     return f"${m}\\times10^{{{int(e)}}}$"
 
 
+def paired_stats(ex, hb, n_boot=10000):
+    """Paired statistical comparison of expert RMSE `ex` minus HBML RMSE `hb` across participants."""
+    ex = np.asarray(ex, dtype=float)
+    hb = np.asarray(hb, dtype=float)
+    ok = np.isfinite(ex) & np.isfinite(hb)
+    ex, hb = ex[ok], hb[ok]
+    n = len(ex)
+    d = ex - hb
+    lo, hi, meth = boot_ci(d, np.mean, n_boot)
+    mlo, mhi, mmeth = boot_ci(d, np.median, n_boot)
+    hl_est, hl_lo, hl_hi = hodges_lehmann_ci(d)
+    tost_w_p, tost_t_p = tost_equivalence(d, EQUIV_MARGIN_MGDL)
+    tost_boot_p, tost_boot_lo, tost_boot_hi = bootstrap_tost(d, EQUIV_MARGIN_MGDL, n_boot)
+    rel = d / ex
+    tost_rel5_p, rel5_lo, rel5_hi = bootstrap_tost(rel, 0.05, n_boot)
+    try:
+        w = wilcoxon(ex, hb, alternative="two-sided", zero_method="wilcox", method="auto")
+        w_stat, w_p = float(w.statistic), float(w.pvalue)
+    except Exception:
+        w_stat, w_p = np.nan, np.nan
+    try:
+        t = ttest_rel(ex, hb)
+        t_stat, t_p = float(t.statistic), float(t.pvalue)
+    except Exception:
+        t_stat, t_p = np.nan, np.nan
+    try:
+        sw_p = float(shapiro(d).pvalue)
+    except Exception:
+        sw_p = np.nan
+    n_imp = int((d > TIE_TOL).sum())
+    n_worse = int((d < -TIE_TOL).sum())
+    return dict(
+        n_participants=n,
+        hbml_mean=float(hb.mean()), hbml_sd=float(hb.std(ddof=1)) if n > 1 else np.nan,
+        hbml_median=float(np.median(hb)),
+        hbml_iqr=float(np.percentile(hb, 75) - np.percentile(hb, 25)),
+        expert_mean=float(ex.mean()), expert_sd=float(ex.std(ddof=1)) if n > 1 else np.nan,
+        expert_median=float(np.median(ex)),
+        expert_iqr=float(np.percentile(ex, 75) - np.percentile(ex, 25)),
+        paired_diff_mean=float(d.mean()),
+        paired_diff_se=float(d.std(ddof=1) / np.sqrt(n)) if n > 1 else np.nan,
+        paired_diff_median=float(np.median(d)),
+        hodges_lehmann=hl_est, hl_ci95_low=hl_lo, hl_ci95_high=hl_hi,
+        ci95_mean_low=lo, ci95_mean_high=hi, ci95_med_low=mlo, ci95_med_high=mhi,
+        ci_method_mean=meth, ci_method_median=mmeth,
+        wilcoxon_w=w_stat, wilcoxon_p=w_p,
+        tost_margin_mgdl=EQUIV_MARGIN_MGDL, tost_wilcoxon_p=tost_w_p, tost_ttest_p=tost_t_p,
+        tost_boot_p=tost_boot_p, tost_boot_ci90_low=tost_boot_lo, tost_boot_ci90_high=tost_boot_hi,
+        equiv_boot=bool(np.isfinite(tost_boot_p) and tost_boot_p < ALPHA),
+        tost_rel5_p=tost_rel5_p, rel_diff_mean_pct=100.0 * float(np.mean(rel)),
+        rel5_ci90_low_pct=100.0 * rel5_lo, rel5_ci90_high_pct=100.0 * rel5_hi,
+        equiv_wilcoxon=bool(np.isfinite(tost_w_p) and tost_w_p < ALPHA),
+        ttest_t=t_stat, ttest_df=n - 1, ttest_p=t_p,
+        shapiro_p=sw_p,
+        n_improved=n_imp, n_tied=n - n_imp - n_worse, n_worse=n_worse,
+        pct_improved=100.0 * n_imp / n, pct_worse=100.0 * n_worse / n,
+        rel_reduction_pct=100.0 * float(ex.mean() - hb.mean()) / float(ex.mean()),
+    )
+
+
 def run_paired_analysis(n_boot=10000):
     data, source = load_participant_rmse()
     records = []
@@ -236,59 +296,15 @@ def run_paired_analysis(n_boot=10000):
                     continue
                 experts = [m for m in EXPERTS if m in raw.columns]
                 raw = raw[["HBML"] + experts].dropna()
-                n = len(raw)
                 hb = raw["HBML"].to_numpy()
                 exp_means = {m: raw[m].mean() for m in experts}
                 best = min(exp_means, key=exp_means.get)
                 hbml_lowest = bool(hb.mean() < min(exp_means.values()))
                 for m in experts:
-                    ex = raw[m].to_numpy()
-                    d = ex - hb
-                    lo, hi, meth = boot_ci(d, np.mean, n_boot)
-                    mlo, mhi, mmeth = boot_ci(d, np.median, n_boot)
-                    hl_est, hl_lo, hl_hi = hodges_lehmann_ci(d)
-                    tost_w_p, tost_t_p = tost_equivalence(d, EQUIV_MARGIN_MGDL)
-                    tost_boot_p, tost_boot_lo, tost_boot_hi = bootstrap_tost(d, EQUIV_MARGIN_MGDL, n_boot)
-                    # relative margin: each participant's own 5% (delta_i / RMSE_expert,i within +/-0.05)
-                    rel = d / ex
-                    tost_rel5_p, rel5_lo, rel5_hi = bootstrap_tost(rel, 0.05, n_boot)
-                    try:
-                        w = wilcoxon(ex, hb, alternative="two-sided", zero_method="wilcox", method="auto")
-                        w_stat, w_p = float(w.statistic), float(w.pvalue)
-                    except Exception:
-                        w_stat, w_p = np.nan, np.nan
-                    t = ttest_rel(ex, hb)
-                    try:
-                        sw_p = float(shapiro(d).pvalue)
-                    except Exception:
-                        sw_p = np.nan
-                    n_imp = int((d > TIE_TOL).sum())
-                    n_worse = int((d < -TIE_TOL).sum())
-                    records.append(dict(
-                        dataset=ds, horizon=h, context=ctx, n_participants=n, expert=m, is_best_expert=(m == best),
-                        hbml_lowest_mean=hbml_lowest,
-                        hbml_mean=hb.mean(), hbml_sd=hb.std(ddof=1), hbml_median=np.median(hb),
-                        hbml_iqr=np.percentile(hb, 75) - np.percentile(hb, 25),
-                        expert_mean=ex.mean(), expert_sd=ex.std(ddof=1), expert_median=np.median(ex),
-                        expert_iqr=np.percentile(ex, 75) - np.percentile(ex, 25),
-                        paired_diff_mean=d.mean(), paired_diff_se=d.std(ddof=1) / np.sqrt(n),
-                        paired_diff_median=np.median(d),
-                        hodges_lehmann=hl_est, hl_ci95_low=hl_lo, hl_ci95_high=hl_hi,
-                        ci95_mean_low=lo, ci95_mean_high=hi, ci95_med_low=mlo, ci95_med_high=mhi,
-                        ci_method_mean=meth, ci_method_median=mmeth,
-                        wilcoxon_w=w_stat, wilcoxon_p=w_p,
-                        tost_margin_mgdl=EQUIV_MARGIN_MGDL, tost_wilcoxon_p=tost_w_p, tost_ttest_p=tost_t_p,
-                        tost_boot_p=tost_boot_p, tost_boot_ci90_low=tost_boot_lo, tost_boot_ci90_high=tost_boot_hi,
-                        equiv_boot=bool(pd.notna(tost_boot_p) and tost_boot_p < ALPHA),
-                        tost_rel5_p=tost_rel5_p, rel_diff_mean_pct=100.0 * float(np.mean(rel)),
-                        rel5_ci90_low_pct=100.0 * rel5_lo, rel5_ci90_high_pct=100.0 * rel5_hi,
-                        equiv_wilcoxon=bool(pd.notna(tost_w_p) and tost_w_p < ALPHA),
-                        ttest_t=float(t.statistic), ttest_df=n - 1, ttest_p=float(t.pvalue),
-                        shapiro_p=sw_p,
-                        n_improved=n_imp, n_tied=n - n_imp - n_worse, n_worse=n_worse,
-                        pct_improved=100.0 * n_imp / n, pct_worse=100.0 * n_worse / n,
-                        rel_reduction_pct=100.0 * (ex.mean() - hb.mean()) / ex.mean(),
-                    ))
+                    rec = paired_stats(raw[m].to_numpy(), hb, n_boot=n_boot)
+                    rec.update(dataset=ds, horizon=h, context=ctx, expert=m,
+                               is_best_expert=(m == best), hbml_lowest_mean=hbml_lowest)
+                    records.append(rec)
     df_all = pd.DataFrame(records)
     if df_all.empty:
         raise SystemExit("No statistics could be computed (no input tables).")
@@ -391,7 +407,7 @@ def generate_latex_table(df_best, output_tex):
               r"$\Delta = \text{RMSE}_{\text{best}} - \text{RMSE}_{\text{HBML}}$ (mg/dL) is computed per participant; "
               r"positive values favour HBML and negative values favour the expert. Mean 95\% confidence intervals use BCa bootstrap "
               r"(10,000 resamples); HL est.\ reports the exact Hodges--Lehmann pseudomedian of paired differences with its "
-              r"95\% Walsh distribution-free interval. $p$: two-sided paired Wilcoxon signed-rank test; $p_{\mathrm{BH}}$: Benjamini--Hochberg "
+              r"95\% Walsh interval (assuming symmetry of the paired differences). $p$: two-sided paired Wilcoxon signed-rank test; $p_{\mathrm{BH}}$: Benjamini--Hochberg "
               r"adjustment across the configurations shown (zero differences dropped; exact null for $N \le 50$ without ties, otherwise normal approximation). "
               f"Equivalence margin $\\pm {EQUIV_MARGIN_MGDL:.1f}$~mg/dL (chosen post hoc; exploratory). "
               r"Primary equivalence estimand: the mean paired difference, tested by participant-level bootstrap TOST "

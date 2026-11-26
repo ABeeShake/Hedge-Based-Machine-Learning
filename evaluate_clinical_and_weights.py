@@ -182,12 +182,12 @@ def load_forecasts_matrix(fc_path):
     return cols, np.asarray(rows, dtype=float)
 
 
-def run_participant(dataset, pid, fc_path, h_steps):
+def run_participant(dataset, pid, fc_path, h_steps, root=None):
     """Evaluate primary HBML and comparator aggregators using ExpMethods.aggregators and scored_mask."""
     meta = ev.read_meta(fc_path)
     if not meta or meta.get("settings", {}).get("engine_version") != ENGINE_VERSION:
         return None
-    y = ev.load_targets(dataset, pid, root=BASE_DIR)
+    y = ev.load_targets(dataset, pid, root=(BASE_DIR if root is None else root))
     if y is None:
         return None
     cols, f_mat = load_forecasts_matrix(fc_path)
@@ -396,15 +396,19 @@ def evaluate_hypo_trajectory(y, pred, scored_mask, h, diabetes_type=1,
     if p_start is not None:
         pred_runs.append((p_start, p_end))
     false_clusters = 0
+    true_clusters = 0
     n_tot = len(y)
     for st, en in pred_runs:
         win = y[max(0, st - 2):min(n_tot, en + 3)]
-        if not np.any(win[~np.isnan(win)] < true_thresh):
+        if np.any(win[~np.isnan(win)] < true_thresh):
+            true_clusters += 1
+        else:
             false_clusters += 1
 
     out = {
         "n_scored": n_scored,
         "days": days,
+        "days_calendar": len(y) / 288.0,
         "tp": tp, "fp": fp, "fn": fn, "tn": tn,
         "n_episodes": len(episodes),
         "n_episodes_left_censored": n_cens,
@@ -414,6 +418,8 @@ def evaluate_hypo_trajectory(y, pred, scored_mask, h, diabetes_type=1,
         "chance_detected_sum": chance_detected_sum,
         "lead_times_det": lead_times_det_min,
         "lead_times_all": lead_times_all_min,
+        "n_alert_clusters": len(pred_runs),
+        "true_clusters": true_clusters,
         "false_clusters": false_clusters,
         "parkes_a_pct": (100.0 * parkes_a / n_scored) if compute_parkes else float("nan"),
         "parkes_ab_pct": (100.0 * parkes_ab / n_scored) if compute_parkes else float("nan"),
@@ -669,7 +675,9 @@ def main():
                         ep_tot = det_tot = det_any_tot = tp_tot = fp_tot = fn_tot = 0
                         chance_tot = 0.0
                         days_tot = 0.0
+                        days_cal_tot = 0.0
                         fc_tot = 0
+                        tc_tot = 0
                         leads_det = []
                         leads_all = []
                         pa_list = []
@@ -694,7 +702,9 @@ def main():
                             fp_tot += ev_r["fp"]
                             fn_tot += ev_r["fn"]
                             days_tot += ev_r["days"]
+                            days_cal_tot += ev_r["days_calendar"]
                             fc_tot += ev_r["false_clusters"]
+                            tc_tot += ev_r["true_clusters"]
                             leads_det.extend(ev_r["lead_times_det"])
                             leads_all.extend(ev_r["lead_times_all"])
                             pa_list.append(ev_r["parkes_a_pct"])
@@ -707,6 +717,9 @@ def main():
                         pt_ppv = 100.0 * tp_tot / (tp_tot + fp_tot) if (tp_tot + fp_tot) > 0 else float("nan")
                         pt_f1 = (2 * pt_sens * pt_ppv / (pt_sens + pt_ppv)) if (pt_sens + pt_ppv) > 0 else float("nan")
                         far_day = fc_tot / max(days_tot, 1e-6)
+                        far_cal_day = fc_tot / max(days_cal_tot, 1e-6)
+                        cl_tot = tc_tot + fc_tot
+                        cluster_ppv = 100.0 * tc_tot / cl_tot if cl_tot > 0 else float("nan")
                         lead_all_mean = sum(leads_all) / len(leads_all) if leads_all else 0.0
                         lead_det_mean = sum(leads_det) / len(leads_det) if leads_det else 0.0
                         hypo_rows.append({
@@ -732,7 +745,11 @@ def main():
                             "point_sensitivity_pct": pt_sens,
                             "point_ppv_pct": pt_ppv,
                             "point_f1_pct": pt_f1,
+                            "n_alert_clusters": cl_tot,
+                            "true_alert_clusters": tc_tot,
+                            "cluster_ppv_pct": cluster_ppv,
                             "false_alerts_per_day": far_day,
+                            "false_alerts_per_calendar_day": far_cal_day,
                             "parkes_a_pct": sum(pa_list) / len(pa_list),
                             "parkes_ab_pct": sum(pab_list) / len(pab_list),
                         })

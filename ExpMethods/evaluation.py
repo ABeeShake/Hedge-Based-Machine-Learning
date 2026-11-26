@@ -79,7 +79,10 @@ def load_targets(dataset, pid, root=ROOT):
 
 def participant_files(dataset, root=ROOT):
     files = sorted(glob.glob(os.path.join(root, dataset, "*.csv")))
-    return [f for f in files if os.path.basename(f) != f"{dataset}.csv"]
+    return [
+        f for f in files
+        if os.path.basename(f) != f"{dataset}.csv" and not os.path.basename(f).endswith("_manifest.csv")
+    ]
 
 
 def forecast_files(cond_dir, suffix="_forecasts.csv"):

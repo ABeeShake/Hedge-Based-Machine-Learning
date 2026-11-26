@@ -20,7 +20,7 @@ from ExpMethods.simulate import (
 )
 
 # ---- Shared Plot Formatting Helpers ----
-_DATASET_DISPLAY = {"weinstock": "Weinstock", "cgmacros": "CGMacros"}
+_DATASET_DISPLAY = {"weinstock": "Weinstock", "cgmacros": "CGMacros", "ohiot1dm": "OhioT1DM"}
 _HORIZON_DISPLAY = {"half": "0.5", "0.5": "0.5", "2": "2", "5": "5"}
 
 def fmt_dataset(d):
@@ -299,8 +299,9 @@ def main():
         dataset_name = os.path.basename(norm_data_dir)
         cand_main = os.path.dirname(os.path.dirname(os.path.normpath(args.output_dir)))
         main_dir = cand_main if os.path.exists(cand_main) else "."
-    if dataset_name not in ("weinstock", "cgmacros"):
-        for ds_cand in ("weinstock", "cgmacros"):
+    known_datasets = ("weinstock", "cgmacros", "ohiot1dm")
+    if dataset_name not in known_datasets:
+        for ds_cand in known_datasets:
             if ds_cand in args.output_dir.lower() or ds_cand in data_dir.lower():
                 dataset_name = ds_cand
                 break
@@ -311,6 +312,13 @@ def main():
         horizon, context = "unknown", "unknown"
     
     target_col = "Libre.GL" if dataset_name == "weinstock" else "Dexcom.GL"
+    sample_csvs = sorted(f for f in glob(os.path.join(data_dir, "*.csv")) if os.path.basename(f) != f"{dataset_name}.csv")
+    if sample_csvs:
+        hdr = list(pd.read_csv(sample_csvs[0], nrows=0).columns)
+        for cand_col in ("Libre.GL", "Dexcom.GL", "glucose", "gl"):
+            if cand_col in hdr:
+                target_col = cand_col
+                break
     
 
     mix_funcs = {

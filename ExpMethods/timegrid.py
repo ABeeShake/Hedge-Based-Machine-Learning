@@ -23,10 +23,16 @@ STEP_MIN = 5.0
 
 
 def read_raw(csv_path):
-    """(timestamps as datetime64[ns], glucose) from a participant file (Weinstock / CGMacros layout)."""
+    """(timestamps as datetime64[ns], glucose) from a participant file (Weinstock / CGMacros / external CGM layout)."""
     df = pd.read_csv(csv_path)
-    col = "Libre.GL" if "Libre.GL" in df.columns else "Dexcom.GL"
-    ts = pd.to_datetime(df["Timestamp"]).to_numpy()
+    col = next(
+        (c for c in ("Libre.GL", "Dexcom.GL", "glucose", "GlucoseValue", "CGM", "gl", "value") if c in df.columns),
+        None,
+    )
+    if col is None:
+        raise KeyError(f"No recognized glucose column in {csv_path}: {list(df.columns)}")
+    ts_col = next((c for c in ("Timestamp", "timestamp", "ts", "datetime", "time") if c in df.columns), "Timestamp")
+    ts = pd.to_datetime(df[ts_col]).to_numpy()
     g = df[col].to_numpy(dtype=float)
     ok = np.isfinite(g) & ~pd.isna(ts)
     ts, g = ts[ok], g[ok]

@@ -201,3 +201,49 @@ def run_named(name, f_mat, l_mat, targets=None, **kwargs):
     spec.update({k: v for k, v in kwargs.items() if k in ("gamma", "alpha", "update", "scale")})
     return run_hedge(f_mat, l_mat, targets, start=kwargs["start"], horizon=kwargs["horizon"],
                      return_weights=kwargs.get("return_weights", False), **spec)
+
+
+def run_interleaved_hedge(name, f_mat, l_mat, targets, *, start, horizon, return_weights=False, **kwargs):
+    """Run (horizon + 1) independent interleaved non-delayed Hedge learners across slot offsets.
+
+    Each sub-learner r in {0, ..., horizon} receives targets at stride (horizon + 1) starting
+    at (start + horizon + r). Because consecutive targets in sub-stream r are separated by
+    (horizon + 1) steps while forecast delay is `horizon`, the target of prediction m is observed
+    strictly before the origin of prediction m + 1. Thus sub-learner r learns with zero feedback
+    delay on its own sub-stream without sharing updates across interleaved origins.
+    """
+    f_mat = np.asarray(f_mat, dtype=float)
+    l_mat = np.asarray(l_mat, dtype=float)
+    y = None if targets is None else np.asarray(targets, dtype=float).ravel()
+    T, K = l_mat.shape
+    stride = int(horizon) + 1
+    out_f = np.zeros(T, dtype=float)
+    ok = scorable(f_mat, y) if y is not None else np.ones(T, dtype=bool)
+    out_l = np.zeros(T, dtype=float)
+    out_l[int(start) + int(horizon):] = np.nan
+    W = np.ones((T + 1, K), dtype=float) / K if return_weights else None
+
+    for r in range(stride):
+        idx_r = np.arange(int(start) + int(horizon) + r, T, stride)
+        if len(idx_r) == 0:
+            continue
+        f_pad = np.vstack([np.zeros((1, K), dtype=float), f_mat[idx_r]])
+        l_pad = np.vstack([np.zeros((1, K), dtype=float), l_mat[idx_r]])
+        y_pad = np.r_[np.nan, y[idx_r]] if y is not None else None
+        res = run_named(name, f_pad, l_pad, y_pad, start=0, horizon=1,
+                        return_weights=return_weights, **kwargs)
+        if return_weights:
+            f_sub, l_sub, w_sub = res
+            W[idx_r + 1] = w_sub[1:len(idx_r) + 1]
+        else:
+            f_sub, l_sub = res
+        out_f[idx_r] = f_sub[1:]
+        if y is not None:
+            valid = ok[idx_r]
+            out_l[idx_r[valid]] = l_sub[1:][valid]
+        else:
+            out_l[idx_r] = l_sub[1:]
+
+    if return_weights:
+        return out_f, out_l, W
+    return out_f, out_l

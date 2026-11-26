@@ -63,14 +63,16 @@ def process_condition(cond, overwrite=False, plot_ceg=True):
 
 def main():
     parser = argparse.ArgumentParser(description="Run post-processing in chunks for SLURM batch jobs.")
-    parser.add_argument("--condition_idx", type=int, default=None, help="Condition index (0-23) to process. Auto-detects SLURM_ARRAY_TASK_ID.")
+    parser.add_argument("--condition_idx", type=int, default=None, help="Condition index to process. Auto-detects SLURM_ARRAY_TASK_ID.")
+    parser.add_argument("--dataset", type=str, default=None, help="Optional dataset name (e.g. ohiot1dm) to scope condition indices.")
     parser.add_argument("--all_completed", action="store_true", default=False, help="Process all conditions where all simulations are finished.")
-    parser.add_argument("--all", action="store_true", default=False, help="Process all 24 conditions.")
+    parser.add_argument("--all", action="store_true", default=False, help="Process all conditions for the selected dataset(s).")
     parser.add_argument("--overwrite", action="store_true", default=True, help="Overwrite existing post-processed files.")
     parser.add_argument("--no_plot_ceg", action="store_false", dest="plot_ceg", default=True, help="Disable CEG plotting.")
     args = parser.parse_args()
 
-    registry = build_condition_registry()
+    ds_scope = [args.dataset] if (args.dataset and args.dataset != "all") else None
+    registry = build_condition_registry(datasets=ds_scope)
 
     cond_idx = args.condition_idx
     if cond_idx is None and "SLURM_ARRAY_TASK_ID" in os.environ:
@@ -89,7 +91,10 @@ def main():
     elif args.all_completed:
         for cond in registry:
             ds = cond["dataset"]
-            csv_files = [f for f in sorted(glob.glob(os.path.join(ds, "*.csv"))) if os.path.basename(f) != f"{ds}.csv"]
+            csv_files = [
+                f for f in sorted(glob.glob(os.path.join(ds, "*.csv")))
+                if os.path.basename(f) != f"{ds}.csv" and not os.path.basename(f).endswith("_manifest.csv")
+            ]
             complete = all(is_patient_complete(cond["output_dir"], get_patient_id(f), cond=cond) for f in csv_files)
             if complete and csv_files:
                 process_condition(cond, overwrite=args.overwrite, plot_ceg=args.plot_ceg)
@@ -107,7 +112,7 @@ def main():
             for cond in registry:
                 process_condition(cond, overwrite=args.overwrite, plot_ceg=args.plot_ceg)
         # Consolidate race-free per-condition rmse.csv and maxae.csv into dataset-level files
-        for ds in ("cgmacros", "weinstock"):
+        for ds in sorted({c["dataset"] for c in registry}):
             for metric in ("rmse", "maxae"):
                 parts = sorted(glob.glob(os.path.join("Outputs", ds, "h-*", "context-*", f"{metric}.csv")))
                 if parts:

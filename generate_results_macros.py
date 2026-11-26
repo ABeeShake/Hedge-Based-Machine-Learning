@@ -50,7 +50,7 @@ CONTEXTS = [("6", "SixHr"), ("12", "TwelveHr"), ("24", "TwentyFourHr"), ("full",
 CTX_NAME = dict(CONTEXTS)
 CTX_TEXT = {"6": "6-hour", "12": "12-hour", "24": "24-hour", "full": "full-history"}
 STATUS_NAME = {"non-T2D": "NoDiabetes", "pre-T2D": "Prediabetes", "T2D": "TypeTwo"}
-MACRO_PREFIXES = ("RMSE", "AbsRMSE", "Oracle", "CEG", "Wilcoxon", "Ttest", "PctImproved", "PctWorse", "NImproved", "NWorse", "NTotal",
+MACRO_PREFIXES = ("RMSE", "MaxAE", "AbsRMSE", "Oracle", "CEG", "Wilcoxon", "Ttest", "PctImproved", "PctWorse", "NImproved", "NWorse", "NTotal",
                   "PairedDiff", "BestExpert", "StatAll", "StatWeinstock", "StatCGMacros", "StatCgmacros",
                   "Baseline", "Vol[A-Z]", "Timing", "NWeinstock", "NCgmacros", "NCGMacros", "NConfigs", "NTotalParticipants",
                   "NParticipantConfigs", "NSecondarySubset", "NMinScored", "NExcluded", "Ablation", "GammaSens", "NExpertsWinning",
@@ -137,7 +137,7 @@ class Macros:
         self.add(name, f"{value:.{nd}f}")
 
 
-def rmse_block(M, rows, stat, disp, name_stat, name_disp, group_fn):
+def rmse_block(M, rows, stat, disp, name_stat, name_disp, group_fn, prefix="RMSE"):
     """Per-model macros from a pivot table. group_fn(row) -> macro fragment before the horizon."""
     by_cfg = {}
     for row in rows:
@@ -149,12 +149,12 @@ def rmse_block(M, rows, stat, disp, name_stat, name_disp, group_fn):
         for c, cname in CONTEXTS:
             v, d = row.get(f"{stat}.{c}", ""), row.get(f"{disp}.{c}", "")
             if v not in ("", None):
-                M.add(f"RMSE{name_stat}{frag}{hz}{model}{cname}", strip_latex(v))
+                M.add(f"{prefix}{name_stat}{frag}{hz}{model}{cname}", strip_latex(v))
                 fv = to_float(v)
                 if fv is not None:
                     by_cfg.setdefault((frag, hz, c), {})[model] = (fv, strip_latex(d))
             if d not in ("", None):
-                M.add(f"RMSE{name_disp}{frag}{hz}{model}{cname}", strip_latex(d))
+                M.add(f"{prefix}{name_disp}{frag}{hz}{model}{cname}", strip_latex(d))
     return by_cfg
 
 
@@ -262,6 +262,11 @@ def generate_macros(strict=False, quiet=False):
     rows = need("rmse_pivot_median.csv")
     if rows:
         rmse_block(M, rows, "median", "iqr", "Median", "iqr", lambda r: dataset_label(r["dataset"]))
+
+    rows = read_rows("maxae_pivot_mean.csv")
+    if rows:
+        sources.append("maxae_pivot_mean.csv")
+        rmse_block(M, rows, "mean", "sd", "Mean", "sd", lambda r: dataset_label(r["dataset"]), prefix="MaxAE")
 
     # 2. CGMacros subgroups
     M.section("CGMacros glycaemic-status subgroups: RMSE")
@@ -909,6 +914,60 @@ def generate_macros(strict=False, quiet=False):
         npe = to_float(rows[0].get("n_participants_with_episodes", ""))
         if npe is not None:
             M.add("HypoMatchedNParticipantsWithEpisodes", int(npe))
+
+        # Write Supplementary Table of matched-FAR sensitivity across 0, 10, 15, 20 min warning times
+        mfar_map = {}
+        for r in rows:
+            mfar_map[(int(float(r["min_warning_min"])), round(float(r["false_alerts_per_day"]), 2), r["model"])] = r
+        def _fmt_ci_sens(row):
+            s = to_float(row.get("sensitivity_pct", ""))
+            lo = to_float(row.get("ci95_low", ""))
+            hi = to_float(row.get("ci95_high", ""))
+            if s is None:
+                return "---"
+            if lo is None or hi is None:
+                return f"{s:.1f}"
+            return f"{s:.1f} [{lo:.1f}, {hi:.1f}]"
+        def _fmt_ci_diff(row):
+            d = to_float(row.get("diff_vs_reference_pp", ""))
+            lo = to_float(row.get("diff_ci95_low", ""))
+            hi = to_float(row.get("diff_ci95_high", ""))
+            if d is None:
+                return "---"
+            if lo is None or hi is None:
+                return f"{d:+.1f}"
+            return f"{d:+.1f} [{lo:+.1f}, {hi:+.1f}]"
+        mfar_lines = [
+            r"\begin{table*}[t]",
+            r"\centering",
+            r"\scriptsize",
+            r"\resizebox{\linewidth}{!}{%",
+            r"\begin{tabular}{cccccc}",
+            r"\toprule",
+            r"Min.\ warning & False alerts/day & HBML sens.\ \% [95\% CI] & Best expert (ARIMA) [95\% CI] & Persistence [95\% CI] & HBML $-$ Persistence (pp) [95\% CI] \\",
+            r"\midrule",
+        ]
+        warn_disp = {0: r"$\ge 5$~min (any pre-onset)", 10: r"$\ge 10$~min", 15: r"$\ge 15$~min", 20: r"$\ge 20$~min"}
+        for wi, wmin in enumerate((0, 10, 15, 20)):
+            if wi > 0:
+                mfar_lines.append(r"\midrule")
+            for fval in (0.45, 0.55, 0.65, 0.75, 0.85):
+                rh = mfar_map.get((wmin, fval, "HBML"), {})
+                rb = mfar_map.get((wmin, fval, "BestExpert"), {})
+                rp = mfar_map.get((wmin, fval, "Persistence"), {})
+                mfar_lines.append(
+                    f"{warn_disp[wmin]} & {fval:.2f} & {_fmt_ci_sens(rh)} & {_fmt_ci_sens(rb)} & {_fmt_ci_sens(rp)} & {_fmt_ci_diff(rp)} \\\\"
+                )
+        mfar_lines += [
+            r"\bottomrule",
+            r"\end{tabular}%",
+            r"}",
+            r"\caption{\textbf{30-minute Weinstock pre-onset hypoglycaemia sensitivity at matched false-alert rates across minimum warning times ($\ge 5$, $10$, $15$, and $20$~min).} Values are pooled pre-onset sensitivities (\%) across \HypoEpisodesWeinstockThirtyMin{} evaluable episodes (\HypoParticipantsWithEpisodesWeinstockThirtyMin{} contributing of \NWeinstockThirtyMin{} retained participants) with 2,000-resample participant-clustered bootstrap 95\% confidence intervals obtained by interpolating each detector's 70--90~mg/dL threshold sweep without extrapolation (``---'' marks false-alert rates below ARIMA's minimum operating rate of \HypoFalseAlertsDayBestExpertWeinstockThirtyMin{} alerts/day). Paired differences ``HBML $-$ Persistence'' show HBML sensitivity minus current-reading persistence sensitivity at each matched false-alert rate.}",
+            r"\label{tab:hypoglycemia_matched_far}",
+            r"\end{table*}",
+        ]
+        with open(os.path.join(TABLES_DIR, "table_hypoglycemia_matched_far.tex"), "w", encoding="utf-8") as f:
+            f.write("\n".join(mfar_lines) + "\n")
 
     M.section("Pool mechanism: leave-one-expert-out, no-reference pool, and CV fixed weights")
     pm_rows = read_rows("pool_mechanism_summary.csv")

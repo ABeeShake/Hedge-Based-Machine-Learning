@@ -63,10 +63,44 @@ def simplex_ls(F, y, n_iter=20000, tol=1e-12):
     return w
 
 
+SHORTCTX_EXPERTS = ("ARIMA", "ETS", "NHITS")
+
+
 def hbml_rmse(F, y, mask, h):
     L = agg.online_losses(F, y, START, h)
     _, loss = agg.run_named(PRIMARY, F, L, y, start=START, horizon=h)
     return ev.rmse(loss, mask)
+
+
+def hbml_interleaved_rmse(F, y, mask, h):
+    """Run (h+1) independent interleaved non-delayed learners matching HBML's spec."""
+    L = agg.online_losses(F, y, START, h)
+    _, loss = agg.run_interleaved_hedge(PRIMARY, F, L, y, start=START, horizon=h)
+    return ev.rmse(loss, mask)
+
+
+def participant_variants(F, y, cols, mask, h, w_cv=None):
+    """Compute mechanism ablation variants for one participant forecast matrix."""
+    res = {
+        "HBML": hbml_rmse(F, y, mask, h),
+        "HBML-interleaved": hbml_interleaved_rmse(F, y, mask, h),
+        "Uniform": ev.rmse((F.mean(axis=1) - y) ** 2, mask),
+    }
+    if w_cv is not None:
+        res["FixedConvex-CV"] = ev.rmse((F @ w_cv - y) ** 2, mask)
+    for j, c in enumerate(cols):
+        keep = [i for i in range(len(cols)) if i != j]
+        res[f"HBML-minus-{c}"] = hbml_rmse(F[:, keep], y, mask, h)
+    keep_noref = [i for i, c in enumerate(cols) if c not in ("Persistence", "RunningMean")]
+    res["HBML-no-reference"] = hbml_rmse(F[:, keep_noref], y, mask, h)
+    short_idx = [i for i, c in enumerate(cols) if c in SHORTCTX_EXPERTS]
+    if len(short_idx) >= 2:
+        res["HBML-shortctx-pool"] = hbml_rmse(F[:, short_idx], y, mask, h)
+    L_full = agg.online_losses(F, y, START, h)
+    for c in SHORTCTX_EXPERTS:
+        if c in cols:
+            res[f"Expert-{c}"] = ev.rmse(L_full[:, cols.index(c)], mask)
+    return res
 
 
 def load_config(ds, h_str, h_disp, ctx, keep):
@@ -105,12 +139,14 @@ def boot_ci(d, n_boot, seed=11):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--full-only", action="store_true")
+    ap.add_argument("--datasets", default="weinstock,cgmacros", help="Comma-separated dataset list.")
     ap.add_argument("--n_boot", type=int, default=5000)
     ap.add_argument("--folds", type=int, default=5)
     a = ap.parse_args()
+    datasets = [d.strip() for d in a.datasets.split(",") if d.strip()]
     retained = ecw.load_retained_ids()
     rows = []
-    for ds in ("weinstock", "cgmacros"):
+    for ds in datasets:
         for h_str, h_disp, h in ecw.HORIZONS:
             for ctx in (["full"] if a.full_only else ecw.CONTEXTS):
                 parts = load_config(ds, h_str, h_disp, ctx, retained.get((ds, h_disp, ctx)))
@@ -131,15 +167,7 @@ def main():
                         if f == k:
                             w_cv[p["pid"]] = wk
                 for p in parts:
-                    F, y, m = p["F"], p["y"], p["mask"]
-                    res = {"HBML": hbml_rmse(F, y, m, h),
-                           "Uniform": ev.rmse((F.mean(axis=1) - y) ** 2, m),
-                           "FixedConvex-CV": ev.rmse((F @ w_cv[p["pid"]] - y) ** 2, m)}
-                    for j, c in enumerate(cols):
-                        keep = [i for i in range(len(cols)) if i != j]
-                        res[f"HBML-minus-{c}"] = hbml_rmse(F[:, keep], y, m, h)
-                    keep = [i for i, c in enumerate(cols) if c not in REFERENCE_EXPERTS]
-                    res["HBML-no-reference"] = hbml_rmse(F[:, keep], y, m, h)
+                    res = participant_variants(p["F"], p["y"], cols, p["mask"], h, w_cv[p["pid"]])
                     for v, r in res.items():
                         rows.append(dict(dataset=ds, horizon=h_disp, context=ctx, id=p["pid"], variant=v, rmse=r))
     if not rows:
