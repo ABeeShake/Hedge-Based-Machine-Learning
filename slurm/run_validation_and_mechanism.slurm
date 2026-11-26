@@ -29,6 +29,8 @@ export FAST_ENGINE_DEVICE="cpu"
 
 echo "=== [1/3] Running cached-output validation & missing-data audit ==="
 "$PY" validate_engine_outputs.py --datasets weinstock,cgmacros --n-boot 2000
+mkdir -p validation_results
+cp -f Outputs/validation/* validation_results/
 
 echo "=== [2/3] Running extended mechanism & context-asymmetry ablations ==="
 "$PY" analyze_pool_mechanism.py --datasets weinstock,cgmacros --n_boot 5000
