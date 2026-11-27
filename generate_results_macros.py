@@ -1701,10 +1701,10 @@ def generate_macros(strict=False, quiet=False):
             r"\centering",
             r"\scriptsize",
             r"\begin{subtable}{\linewidth}\centering",
-            r"\resizebox{\linewidth}{!}{%",
-            r"\begin{tabular}{lcccccccccc}",
+            r"\setlength{\tabcolsep}{2.5pt}",
+            r"\begin{tabular}{lc c cccc}",
             r"\toprule",
-            r"Cohort & Hor.\ (h) & \texttt{HBML-SE} & \texttt{HBML-MAE} ($\Delta$ [95\% CI]) & \texttt{HBML-Huber15} ($\Delta$ [95\% CI]) & \texttt{HBML-MixEG} ($\Delta$ [95\% CI]) & \texttt{MixEG-Interl} ($\Delta$ [95\% CI]) & \texttt{HBML-AsymHypo} & \texttt{HBML-Pinball20} & \texttt{Uniform} & \texttt{FTL} \\",
+            r"Cohort & Hor.\ (h) & \texttt{HBML-SE} & \shortstack{\texttt{HBML-MAE}\\($\Delta$ [95\% CI])} & \shortstack{\texttt{HBML-Huber15}\\($\Delta$ [95\% CI])} & \shortstack{\texttt{HBML-MixEG}\\($\Delta$ [95\% CI])} & \shortstack{\texttt{MixEG-Interl}\\($\Delta$ [95\% CI])} \\",
             r"\midrule",
         ]
         ds_lv = [("weinstock", "Weinstock 2016"), ("cgmacros", "CGMacros"), ("hall", "Hall 2018"), ("dubosson", "Dubosson T1D")]
@@ -1718,7 +1718,28 @@ def generate_macros(strict=False, quiet=False):
                     f"{_lv_rmse_cell(lv_rmse_map.get((ds_raw, hz, 'HBML-MAE')), True)} & "
                     f"{_lv_rmse_cell(lv_rmse_map.get((ds_raw, hz, 'HBML-Huber15')), True)} & "
                     f"{_lv_rmse_cell(lv_rmse_map.get((ds_raw, hz, 'HBML-MixEG')), True)} & "
-                    f"{_lv_rmse_cell(lv_rmse_map.get((ds_raw, hz, 'HBML-MixEG-interleaved')), True)} & "
+                    f"{_lv_rmse_cell(lv_rmse_map.get((ds_raw, hz, 'HBML-MixEG-interleaved')), True)} \\\\"
+                )
+        lv_lines += [
+            r"\bottomrule",
+            r"\end{tabular}",
+            r"\caption{Online loss functions and direct Mixture-EG applied to cached Engine~v2.3 MSE base experts (full history).}",
+            r"\end{subtable}",
+            r"\par\medskip",
+            r"\begin{subtable}{\linewidth}\centering",
+            r"\setlength{\tabcolsep}{5pt}",
+            r"\begin{tabular}{lccccccc}",
+            r"\toprule",
+            r"Cohort & Hor.\ (h) & \texttt{HBML-SE} & \texttt{HBML-AsymHypo} & \texttt{HBML-Pinball20} & \texttt{Uniform} & \texttt{FTL} \\",
+            r"\midrule",
+        ]
+        for di, (ds_raw, ds_disp) in enumerate(ds_lv):
+            if di > 0:
+                lv_lines.append(r"\midrule")
+            for hz in ("0.5", "2", "5"):
+                lv_lines.append(
+                    f"{ds_disp} & {hz} & "
+                    f"{_lv_rmse_cell(lv_rmse_map.get((ds_raw, hz, 'HBML-SE')))} & "
                     f"{_lv_rmse_cell(lv_rmse_map.get((ds_raw, hz, 'HBML-AsymHypo')))} & "
                     f"{_lv_rmse_cell(lv_rmse_map.get((ds_raw, hz, 'HBML-Pinball20')))} & "
                     f"{_lv_rmse_cell(lv_rmse_map.get((ds_raw, hz, 'Uniform')))} & "
@@ -1726,16 +1747,15 @@ def generate_macros(strict=False, quiet=False):
                 )
         lv_lines += [
             r"\bottomrule",
-            r"\end{tabular}%",
-            r"}",
-            r"\caption{Online loss functions and direct Mixture-EG applied to cached Engine~v2.3 MSE base experts (full history).}",
+            r"\end{tabular}",
+            r"\caption{Asymmetric and quantile online weighting (\texttt{HBML-AsymHypo}, \texttt{HBML-Pinball20}) vs.\ \texttt{Uniform} and \texttt{FTL} on cached MSE experts.}",
             r"\end{subtable}",
             r"\par\medskip",
             r"\begin{subtable}{\linewidth}\centering",
-            r"\resizebox{\linewidth}{!}{%",
+            r"\setlength{\tabcolsep}{5pt}",
             r"\begin{tabular}{lccccccc}",
             r"\toprule",
-            r"Base-expert training loss & Cohort & 0.5 h \texttt{HBML-SE} & 2 h \texttt{HBML-SE} & 5 h \texttt{HBML-SE} & 0.5 h \texttt{HBML-MixEG} & 2 h \texttt{HBML-MixEG} & 0.5 h \texttt{Uniform} \\",
+            r"Base-expert training loss & Cohort & \shortstack{0.5 h\\\texttt{HBML-SE}} & \shortstack{2 h\\\texttt{HBML-SE}} & \shortstack{5 h\\\texttt{HBML-SE}} & \shortstack{0.5 h\\\texttt{MixEG}} & \shortstack{2 h\\\texttt{MixEG}} & \shortstack{0.5 h\\\texttt{Uniform}} \\",
             r"\midrule",
         ]
         retrain_tbl_specs = [("cached MSE", None)] + [(disp, dn) for dn, _, disp in retrain_specs]
@@ -1755,8 +1775,7 @@ def generate_macros(strict=False, quiet=False):
                 )
         lv_lines += [
             r"\bottomrule",
-            r"\end{tabular}%",
-            r"}",
+            r"\end{tabular}",
             r"\caption{Full base-expert retraining sensitivity: retraining \texttt{XGBoost}, \texttt{NODE}, and \texttt{N-HITS} under \texttt{asym\_hypo}, \texttt{huber20}, and \texttt{pinball20} vs.\ cached MSE experts.}",
             r"\end{subtable}",
             r"\caption{\textbf{Alternative online losses, direct Mixture-EG, and base-expert loss retraining across all four cohorts (full history).} In panel (a), $\Delta$ denotes paired cohort-mean RMSE difference relative to \texttt{HBML-SE} (negative indicates lower RMSE than \texttt{HBML-SE}), with 95\% participant-level bootstrap confidence intervals.}",
@@ -1765,6 +1784,109 @@ def generate_macros(strict=False, quiet=False):
         ]
         with open(os.path.join(TABLES_DIR, "table_loss_variants.tex"), "w", encoding="utf-8") as f:
             f.write("\n".join(lv_lines) + "\n")
+
+    # Merged, legible CGMacros metabolic-stratum tables (avoiding 6 separate pages while keeping readable font size)
+    cg_rmse_specs = [
+        ("non-T2D", r"Without diabetes ($n=\NCgmacrosNoDiabetes$)"),
+        ("pre-T2D", r"Prediabetes ($n=\NCgmacrosPrediabetes$)"),
+        ("T2D", r"Type 2 diabetes ($n=\NCgmacrosTypeTwo$)"),
+    ]
+    cg_rmse_parts = []
+    for st_code, st_disp in cg_rmse_specs:
+        srows = read_rows(f"rmse_mean_cgmacros_{st_code}.csv")
+        if not srows:
+            continue
+        blk = []
+        for ri, r in enumerate(srows):
+            hz_raw = str(r.get("horizon", "")).strip()
+            hz_disp = "0.5" if hz_raw in ("0.5", "half") else hz_raw
+            m_disp = r.get("model", "")
+            cells = [f"{r.get(f'mean.{ck}', '')}~({r.get(f'sd.{ck}', '')})" for ck in ("6", "12", "24", "full")]
+            st_col = st_disp if ri == 0 else ""
+            blk.append(f"{st_col} & {hz_disp} & {m_disp} & " + " & ".join(cells) + r" \\")
+            if m_disp == "HBML" and ri < len(srows) - 1:
+                blk.append(r"\cmidrule(lr){2-7}")
+        cg_rmse_parts.append(blk)
+    if cg_rmse_parts:
+        hdr = [
+            r"\toprule",
+            r" & & & \multicolumn{4}{c}{Context Window (hr)} \\",
+            r"\cmidrule(lr){4-7}",
+            r"Subgroup & Hor.\ (hr) & Model & 6 & 12 & 24 & full \\",
+            r"\midrule",
+        ]
+        part1 = cg_rmse_parts[0] + ([r"\midrule"] + cg_rmse_parts[1] if len(cg_rmse_parts) > 1 else [])
+        lt_lines = [
+            r"\begin{table}[htbp]",
+            r"\centering",
+            r"\scriptsize",
+            r"\setlength{\tabcolsep}{4.5pt}",
+            r"\renewcommand{\arraystretch}{0.86}",
+            r"\begin{tabular}{lclcccc}",
+        ] + hdr + part1 + [
+            r"\bottomrule",
+            r"\end{tabular}",
+            r"\caption{\textbf{Forecasting performance across CGMacros glycemic-status subgroups.} Mean (SD) participant-level RMSE (mg/dL; minimum \NMinScored{} scored targets) across participants without diabetes ($n=\NCgmacrosNoDiabetes$), with prediabetes ($n=\NCgmacrosPrediabetes$), and with type 2 diabetes ($n=\NCgmacrosTypeTwo$, continued below). Bold values mark the lowest mean RMSE per configuration.}",
+            r"\label{tab:rmse_cgmacros_subgroups}",
+            r"\end{table}",
+        ]
+        if len(cg_rmse_parts) > 2:
+            lt_lines += [
+                r"\begin{table}[htbp]",
+                r"\ContinuedFloat",
+                r"\centering",
+                r"\scriptsize",
+                r"\setlength{\tabcolsep}{4.5pt}",
+                r"\renewcommand{\arraystretch}{0.86}",
+                r"\begin{tabular}{lclcccc}",
+            ] + hdr + cg_rmse_parts[2] + [
+                r"\bottomrule",
+                r"\end{tabular}",
+                r"\caption{\textbf{Forecasting performance across CGMacros glycemic-status subgroups (continued: type 2 diabetes, $n=\NCgmacrosTypeTwo$).}}",
+                r"\end{table}",
+            ]
+        with open(os.path.join(TABLES_DIR, "table_cgmacros_subgroups_rmse.tex"), "w", encoding="utf-8") as f:
+            f.write("\n".join(lt_lines) + "\n")
+
+    cg_ceg_rows_tex = []
+    for si, (st_code, st_disp) in enumerate(cg_rmse_specs):
+        crows = read_rows(f"ceg_cgmacros_{st_code}.csv")
+        if not crows:
+            continue
+        if si > 0:
+            cg_ceg_rows_tex.append(r"\midrule")
+        for ri, r in enumerate(crows):
+            hz_raw = str(r.get("horizon", "")).strip()
+            hz_disp = "0.5" if hz_raw in ("0.5", "half") else hz_raw
+            st_col = st_disp if ri == 0 else ""
+            cg_ceg_rows_tex.append(
+                f"{st_col} & {hz_disp} & {r.get('context', '')} & "
+                f"{r.get('A+Bpct', '')} & {r.get('Cpct', '')} & {r.get('D1pct', '')} & "
+                f"{r.get('D2pct', '')} & {r.get('E1pct', '')} & {r.get('E2pct', '')} \\\\"
+            )
+            if str(r.get("context", "")).strip() == "full" and ri < len(crows) - 1:
+                cg_ceg_rows_tex.append(r"\cmidrule(lr){2-9}")
+    if cg_ceg_rows_tex:
+        ceg_lines = [
+            r"\begin{table}[htbp]",
+            r"\centering",
+            r"\footnotesize",
+            r"\setlength{\tabcolsep}{4.5pt}",
+            r"\begin{tabular}{lcccccccc}",
+            r"\toprule",
+            r" & & & \multicolumn{6}{c}{\% in Region} \\",
+            r"\cmidrule(lr){4-9}",
+            r"Subgroup & Hor.\ (hr) & Context (hr) & A+B & C & D\textsubscript{1} & D\textsubscript{2} & E\textsubscript{1} & E\textsubscript{2} \\",
+            r"\midrule",
+        ] + cg_ceg_rows_tex + [
+            r"\bottomrule",
+            r"\end{tabular}",
+            r"\caption{\textbf{Clarke Error Grid classification of HBML forecasts across CGMacros glycemic-status subgroups.} Mean participant-level region percentages across participants without diabetes ($n=\NCgmacrosNoDiabetes$), with prediabetes ($n=\NCgmacrosPrediabetes$), and with type 2 diabetes ($n=\NCgmacrosTypeTwo$).}",
+            r"\label{tab:ega_cgmacros_subgroups}",
+            r"\end{table}",
+        ]
+        with open(os.path.join(TABLES_DIR, "table_cgmacros_subgroups_ceg.tex"), "w", encoding="utf-8") as f:
+            f.write("\n".join(ceg_lines) + "\n")
 
     if lv_hypo_map:
         def _lv_h_cell(row, with_diff=False):
