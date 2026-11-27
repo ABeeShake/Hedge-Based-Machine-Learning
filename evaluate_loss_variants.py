@@ -30,7 +30,7 @@ import calculate_statistics as cstat  # noqa: E402
 import evaluate_clinical_and_weights as ecw  # noqa: E402
 import analyze_pool_mechanism as apm  # noqa: E402
 
-START = int(G.eval_start)
+START = int(G.burn_in_steps)
 MIN_SCORED = int(G.min_scored_points)
 ENGINE_VERSION = ecw.ENGINE_VERSION
 

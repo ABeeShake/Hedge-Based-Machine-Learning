@@ -549,6 +549,27 @@ def test_m2a_shortctx_decomposition_local():
     assert abs(res_5h["HBML-no-XGB-NODE"] - res_5h["HBML"]) < 2.0, res_5h
 
 
+def test_canonical_start_consistency():
+    """Verify validate_engine_outputs, evaluate_external_cohort, and evaluate_loss_variants share burn_in_steps=288."""
+    import evaluate_clinical_and_weights as ecw
+    import evaluate_external_cohort as ext
+    import evaluate_loss_variants as elv
+    import validate_engine_outputs as val
+    assert ecw.START == val.START == ext.START == elv.START == int(G.burn_in_steps)
+    rng = np.random.default_rng(99)
+    T = 900
+    y = 130.0 + 30.0 * np.sin(np.arange(T) * 0.04) + rng.normal(0.0, 2.0, T)
+    F = np.column_stack([y + rng.normal(0, 6 + k, T) for k in range(len(G.experts))])
+    F[:294] = 0.0
+    mask = ev.scored_mask(F, y)
+    for h in (6, 24, 60):
+        L_ecw = agg.online_losses(F, y, ecw.START, h)
+        _, loss_ecw = agg.run_named(ecw.PRIMARY_HBML, F, L_ecw, y, start=ecw.START, horizon=h)
+        rmse_ecw = ev.rmse(loss_ecw, mask)
+        _, rmse_elv, _ = elv.eval_variant("HBML-SE", F, y, mask, h)
+        assert abs(rmse_ecw - rmse_elv) < 1e-10, f"h={h}: ecw={rmse_ecw} vs elv={rmse_elv}"
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

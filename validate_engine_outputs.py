@@ -36,7 +36,7 @@ from ExpMethods.globals import GlobalValues as G  # noqa: E402
 import calculate_statistics as cstat  # noqa: E402
 import evaluate_clinical_and_weights as ecw  # noqa: E402
 
-START = int(G.eval_start)
+START = int(G.burn_in_steps)
 MIN_SCORED = int(G.min_scored_points)
 HORIZONS = [("half", "0.5", 6), ("2", "2", 24), ("5", "5", 60)]
 CONTEXTS = ["6", "12", "24", "full"]
@@ -65,7 +65,7 @@ def eval_participant_unfiltered(dataset, pid, fc_path, h_steps, min_scored=1):
     if len(cols) < 2:
         return None
     n = min(len(y), len(f_mat))
-    if n <= START + int(G.eval_tail) + 10:
+    if n <= int(G.eval_start) + int(G.eval_tail) + 10:
         return None
     y = y[:n]
     f_mat = f_mat[:n]
