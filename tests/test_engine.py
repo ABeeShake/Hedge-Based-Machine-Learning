@@ -570,6 +570,14 @@ def test_canonical_start_consistency():
         assert abs(rmse_ecw - rmse_elv) < 1e-10, f"h={h}: ecw={rmse_ecw} vs elv={rmse_elv}"
 
 
+
+def test_transported_weights_post_fit_mask():
+    from analyze_transported_weights import post_fit_mask
+    m = np.zeros(1000, bool); m[100:900] = True
+    ev_mask, fit_idx = post_fit_mask(m, 288)
+    assert len(fit_idx) == 288 and fit_idx[-1] == 387
+    assert ev_mask.sum() == 800 - 288 and not ev_mask[:388].any(), "fitting rows are never scored"
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

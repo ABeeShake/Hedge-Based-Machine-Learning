@@ -63,6 +63,7 @@ echo "== 6 Clarke tables, subgroup tables, figures =="
 echo "== 6b Clinical hypoglycemia events, weight diagnostics, and regime tables =="
 "${PY}" evaluate_clinical_and_weights.py
 "${PY}" analyze_pool_mechanism.py --full-only || true   # leave-one-expert-out, fixed convex weights (review point 7)
+"${PY}" analyze_transported_weights.py || true   # fixed weights transported across cohorts and frozen per participant (round 5)
 "${PY}" analyze_gamma_sensitivity.py || true
 if [ -f compute_regimes.py ] && [ -f analyze_regimes.py ] && [ -f plot_regime_analysis.py ]; then
     "${PY}" compute_regimes.py --cgmacros_dir ./cgmacros --weinstock_dir ./weinstock --out_dir ./Outputs/regimes

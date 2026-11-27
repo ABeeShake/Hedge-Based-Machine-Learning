@@ -67,6 +67,14 @@ COMMON_PREAMBLE = r"""\documentclass{article}
 def build_external_validation_fig():
     hall_stats = read_csv("external_results/hall/statistical_tests_best_expert.csv")
     hall_mfar = read_csv("external_results/hall/clinical_hypo_matched_far.csv")
+    ann_parts = []
+    for r in hall_mfar:
+        if str(r.get("min_warning_min")) in ("0", "0.0") and abs(float(r["false_alerts_per_day"]) - 0.65) < 1e-6 \
+                and r["model"] in ("BestExpert", "Persistence") and r.get("diff_vs_reference_pp") not in ("", "nan", None):
+            name = "ARIMA" if r["model"] == "BestExpert" else "Persistence"
+            ann_parts.append(f"vs {name}: ${float(r['diff_vs_reference_pp']):+.1f}$~pp "
+                             f"$[{float(r['diff_ci95_low']):+.1f}, {float(r['diff_ci95_high']):+.1f}]$")
+    ann65 = r"\\".join(ann_parts) if ann_parts else "n/a"
 
     ctx_order = {"6": 0, "12": 1, "24": 2, "full": 3}
     hall_stats.sort(key=lambda r: (float(r["horizon"]), ctx_order[r["context"]]))
@@ -168,7 +176,7 @@ def build_external_validation_fig():
 \addplot[hbmlgrey, dotted, mark=triangle*, mark size=1.8pt, line width=1.1pt] coordinates {""" + " ".join(f"({x:.3f},{y:.2f})" for x, y in curves["Persistence"]) + r"""};
 \addlegendentry{Persistence}
 \node[anchor=south east, font=\tiny, fill=white, fill opacity=0.92, text opacity=1, inner sep=2pt, draw=black!20] at (axis cs:1.02,4)
-  {\shortstack[r]{\textbf{At 1.0/day:}\\HBML $+11.9$~pp vs ARIMA\\$-0.7$~pp vs Persistence}};
+  {\shortstack[r]{\textbf{At 0.65/day (HBML $-$ comparator, 95\% CI):}\\""" + ann65 + r"""}};
 \end{axis}
 \end{tikzpicture}
 \end{document}

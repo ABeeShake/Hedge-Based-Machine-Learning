@@ -57,6 +57,10 @@ results_outline.md
 /hall/
 /dubosson/
 /ohiot1dm/
+/azt1d/
+/brist1d/
+/brist1d_15min/
+/*.parquet
 
 # Results files
 rmse.csv

@@ -55,7 +55,7 @@ MACRO_PREFIXES = ("RMSE", "MaxAE", "AbsRMSE", "Oracle", "CEG", "Wilcoxon", "Ttes
                   "Baseline", "Vol[A-Z]", "Timing", "NWeinstock", "NCgmacros", "NCGMacros", "NConfigs", "NTotalParticipants",
                   "NParticipantConfigs", "NSecondarySubset", "NMinScored", "NExcluded", "Ablation", "GammaSens", "NExpertsWinning",
                   "TopWinner", "SecondWinner", "Pop[A-Z]", "Cadence", "Grid", "Weight", "PoolSeven", "PoolMech", "Clipped", "Hypo",
-                  "Regime", "Seed", "HodgesLehmann", "TOST", "Equiv", "Cmp", "WeightedRMSE", "PooledRMSE", "Env", "Ext", "Val", "LossVar")
+                  "Regime", "Seed", "HodgesLehmann", "TOST", "Equiv", "Cmp", "TW", "WeightedRMSE", "PooledRMSE", "Env", "Ext", "Val", "LossVar")
 
 
 def clean_name(name):
@@ -774,8 +774,8 @@ def generate_macros(strict=False, quiet=False):
                 if pos:
                     spans.append((max(pos) - min(pos)) / gmap[0.2] * 100.0)
         if reds:
-            M.num("GammaSensZeroVsDefaultMinPct", min(reds), 1)
-            M.num("GammaSensZeroVsDefaultMaxPct", max(reds), 1)
+            M.num("GammaSensZeroVsDefaultMinPct", min(reds), 2)
+            M.num("GammaSensZeroVsDefaultMaxPct", max(reds), 2)
         if spans:
             M.num("GammaSensPosSpanMaxPct", max(spans), 2)
 
@@ -1070,6 +1070,58 @@ def generate_macros(strict=False, quiet=False):
         with open(p, newline="", encoding="utf-8") as f:
             return list(csv.DictReader(f))
 
+    M.section("Transported and personal fixed convex weights (round 5, Major 3)")
+    tw = read_rows("transported_weights_summary.csv")
+    tw_names = {"weinstock": "Weinstock", "cgmacros": "Cgmacros", "hall": "Hall", "dubosson": "Dubosson"}
+    tw_h = {"0.5": "ThirtyMin", "2": "TwoHour", "5": "FiveHour", "2.0": "TwoHour", "5.0": "FiveHour"}
+    if tw:
+        sources.append("transported_weights_summary.csv")
+        cnt = {"Transport": [0, 0, 0], "Personal": [0, 0, 0]}   # better, worse, total (95% CI excludes 0)
+        lines = [r"\begin{table}[htbp]", r"\centering", r"\scriptsize",
+                 r"\begin{tabular}{llllrrr}", r"\toprule",
+                 r"Target & Horizon & Variant & $N$ & RMSE & $\Delta$ vs HBML [95\% CI] & Better / $N$ \\", r"\midrule"]
+        for r in tw:
+            var = r["variant"]
+            if var == "HBML":
+                continue
+            tgt, hz = tw_names.get(r["target"], r["target"]), tw_h.get(str(r["horizon"]), str(r["horizon"]))
+            d, lo, hi = to_float(r["diff_vs_hbml"]), to_float(r["diff_ci95_low"]), to_float(r["diff_ci95_high"])
+            key = clean_name(var) + tgt + hz
+            M.add(f"TWDiff{key}", f"{d:+.2f}")
+            if lo is not None and hi is not None:
+                M.add(f"TWDiffLow{key}", f"{lo:+.2f}")
+                M.add(f"TWDiffHigh{key}", f"{hi:+.2f}")
+            M.num(f"TWRMSE{key}", to_float(r["mean_rmse"]), 2)
+            kind = "Transport" if var.startswith("Transported") else ("Personal" if var.startswith("Personal") else None)
+            if kind and lo is not None and hi is not None:
+                cnt[kind][2] += 1
+                cnt[kind][0] += int(hi < 0)
+                cnt[kind][1] += int(lo > 0)
+            lines.append(f"{r['target'].capitalize()} & {r['horizon']} h & {var} & {r['n']} & {float(r['mean_rmse']):.2f} & "
+                         f"{d:+.2f} [{lo:+.2f}, {hi:+.2f}] & {r['n_better_than_hbml']}/{r['n']} \\\\")
+        for kind, (b, w, n) in cnt.items():
+            M.add(f"TWN{kind}Better", b)
+            M.add(f"TWN{kind}Worse", w)
+            M.add(f"TWN{kind}", n)
+        lines += [r"\bottomrule", r"\end{tabular}",
+                  r"\caption{\textbf{Fixed convex weights that need no labels from the target cohort, compared with online HBML (full history).} "
+                  r"Transported-$c$: simplex weights fitted once on every scored target of cohort $c$ and applied unchanged to the target cohort. "
+                  r"Personal-burnin: each participant's own weights fitted on their first 288 scored targets and then frozen. "
+                  r"All variants, including HBML, are scored on the same targets after each participant's fitting window. "
+                  r"$\Delta$: paired cohort-mean RMSE difference from HBML (negative = lower RMSE than HBML) with participant bootstrap 95\% CI; "
+                  r"``Better'' counts participants with lower RMSE than HBML.}",
+                  r"\label{tab:transported_weights}", r"\end{table}"]
+        with open(os.path.join(TABLES_DIR, "table_transported_weights.tex"), "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    else:
+        for kind in ("Transport", "Personal"):
+            for suf in ("Better", "Worse", ""):
+                M.add(f"TWN{kind}{suf}", "[pending]")
+        with open(os.path.join(TABLES_DIR, "table_transported_weights.tex"), "w", encoding="utf-8") as f:
+            f.write("\\begin{table}[htbp]\\centering\\small Pending: run \\texttt{analyze\\_transported\\_weights.py} on the cached forecasts."
+                    "\\caption{\\textbf{Fixed convex weights that need no labels from the target cohort, compared with online HBML.}}"
+                    "\\label{tab:transported_weights}\\end{table}\n")
+
     M.section("External validation cohorts (Hall 2018 & Dubosson D1NAMO)")
     ext_tex_a = []
     ext_tex_b = []
@@ -1143,6 +1195,21 @@ def generate_macros(strict=False, quiet=False):
                     n_sig_better += 1
                 st_map[(hz_k, ctx_raw)] = r
             M.add(f"ExtNEquivBoot{ds_k}", n_eq_boot)
+            # configurations in which HBML trails the cohort-leading expert, and the 5-h deficit range
+            diffs = [(horizon_label(r["horizon"]), to_float(r.get("paired_diff_mean", ""))) for r in st_rows]
+            M.add(f"ExtNTrailBest{ds_k}", sum(1 for _, d in diffs if d is not None and d < 0))
+            d5 = [-d for hz, d in diffs if hz == "FiveHour" and d is not None]
+            if d5:
+                M.num(f"ExtFiveHourDeficitMin{ds_k}", min(d5), 1)
+                M.num(f"ExtFiveHourDeficitMax{ds_k}", max(d5), 1)
+            tl5 = [to_float(r.get("tost_boot_ci90_low", "")) for r in st_rows if horizon_label(r["horizon"]) == "FiveHour"]
+            tl5 = [v for v in tl5 if v is not None]
+            if tl5:
+                M.num(f"ExtFiveHourTOSTLowMin{ds_k}", min(tl5), 1)
+            pmin = [to_float(r.get("tost_boot_p", "")) for r in st_rows]
+            pmin = [v for v in pmin if v is not None]
+            if pmin:
+                M.num(f"ExtTOSTBootPMin{ds_k}", min(pmin), 2)
             M.add(f"ExtNEquivRelFive{ds_k}", n_eq_rel5)
             M.add(f"ExtNSigBHBetter{ds_k}", n_sig_better)
 
@@ -1275,7 +1342,7 @@ def generate_macros(strict=False, quiet=False):
         ext_lines += [
             r"\bottomrule",
             r"\end{tabular*}",
-            r"\caption{\textbf{Confirmatory external cohort validation on untouched GlucoBench cohorts (Hall 2018, $N=\ExtNHall$; Dubosson D1NAMO T1D, $N=\ExtNDubosson$) using locked Engine v2.3 — primary accuracy and equivalence.} Cohort-mean RMSE (mg/dL), leading constituent expert, paired difference ($\text{RMSE}_{\text{best}} - \text{RMSE}_{\text{HBML}}$, mg/dL) with 90\% bootstrap TOST interval, BH-adjusted Wilcoxon $p$-value, and $\pm 1.0$~mg/dL and $\pm 5\%$ relative TOST $p$-values (comparator aggregators and sub-pools continue below).}",
+            r"\caption{\textbf{External validation on untouched GlucoBench cohorts (Hall 2018, $N=\ExtNHall$; Dubosson D1NAMO T1D, $N=\ExtNDubosson$) using locked Engine v2.3 — primary accuracy and equivalence.} Cohort-mean RMSE (mg/dL), leading constituent expert, paired difference ($\text{RMSE}_{\text{best}} - \text{RMSE}_{\text{HBML}}$, mg/dL) with 90\% bootstrap TOST interval, BH-adjusted Wilcoxon $p$-value, and $\pm 1.0$~mg/dL and $\pm 5\%$ relative TOST $p$-values (comparator aggregators and sub-pools continue below).}",
             r"\label{tab:external_validation}",
             r"\end{table}",
             r"",
@@ -1299,7 +1366,7 @@ def generate_macros(strict=False, quiet=False):
         ext_lines += [
             r"\bottomrule",
             r"\end{tabular*}",
-            r"\caption{\textbf{Confirmatory external cohort validation (continued) — aggregator baselines and sub-pool sensitivity.} Cohort-mean RMSE (mg/dL) for primary \texttt{HBML-SFH-Sqrt}, equal-weight \texttt{Uniform}, Follow-the-Leader (\texttt{FTL}), $(h+1)$-learner interleaved variant, equal-context \{\texttt{ARIMA},\texttt{ETS},\texttt{N-HITS}\} sub-pool, and reference-retained pool excluding \texttt{XGBoost} and \texttt{NODE}.}",
+            r"\caption{\textbf{External validation (continued) — aggregator baselines and sub-pool sensitivity.} Cohort-mean RMSE (mg/dL) for primary \texttt{HBML-SFH-Sqrt}, equal-weight \texttt{Uniform}, Follow-the-Leader (\texttt{FTL}), $(h+1)$-learner interleaved variant, equal-context \{\texttt{ARIMA},\texttt{ETS},\texttt{N-HITS}\} sub-pool, and reference-retained pool excluding \texttt{XGBoost} and \texttt{NODE}. The interleaved and sub-pool columns were added after the external results had been seen and are exploratory.}",
             r"\end{table}",
         ]
         with open(os.path.join(TABLES_DIR, "table_external_validation.tex"), "w", encoding="utf-8") as f:
@@ -1593,7 +1660,7 @@ def generate_macros(strict=False, quiet=False):
         if pkg in env_map:
             M.add(f"Env{nm}Version", env_map[pkg])
     if "cpu" in env_map:
-        hw = f"{env_map['cpu']} ({env_map.get('cpu_cores', '?')} cores, {env_map.get('ram_gb', '?')}~GB RAM"
+        hw = f"a shared compute node ({env_map['cpu']}; {env_map.get('cpu_cores', '?')} logical CPUs, {env_map.get('ram_gb', '?')}~GB RAM"
         gpu = env_map.get("gpu", "none")
         hw += f"; GPU: {gpu})" if gpu and gpu != "none" else "; no GPU)"
         hw += f", {env_map.get('os', '')}"
