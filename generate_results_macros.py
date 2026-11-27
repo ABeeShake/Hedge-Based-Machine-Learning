@@ -55,7 +55,7 @@ MACRO_PREFIXES = ("RMSE", "MaxAE", "AbsRMSE", "Oracle", "CEG", "Wilcoxon", "Ttes
                   "Baseline", "Vol[A-Z]", "Timing", "NWeinstock", "NCgmacros", "NCGMacros", "NConfigs", "NTotalParticipants",
                   "NParticipantConfigs", "NSecondarySubset", "NMinScored", "NExcluded", "Ablation", "GammaSens", "NExpertsWinning",
                   "TopWinner", "SecondWinner", "Pop[A-Z]", "Cadence", "Grid", "Weight", "PoolSeven", "PoolMech", "Clipped", "Hypo",
-                  "Regime", "Seed", "HodgesLehmann", "TOST", "Equiv", "Cmp", "WeightedRMSE", "PooledRMSE", "Env", "Ext", "Val")
+                  "Regime", "Seed", "HodgesLehmann", "TOST", "Equiv", "Cmp", "WeightedRMSE", "PooledRMSE", "Env", "Ext", "Val", "LossVar")
 
 
 def clean_name(name):
@@ -1168,9 +1168,11 @@ def generate_macros(strict=False, quiet=False):
             hz_k = horizon_label(r["horizon"])
             ctx_k = CTX_NAME.get(str(r["context"]).strip().lower(), clean_name(r["context"]))
             var_k = clean_name(r["variant"])
+            mr = to_float(r.get("mean_rmse", ""))
             df = to_float(r.get("diff_vs_hbml", ""))
             lo = to_float(r.get("diff_ci95_low", ""))
             hi = to_float(r.get("diff_ci95_high", ""))
+            M.num(f"ExtMechRMSE{ds_k}{hz_k}{ctx_k}{var_k}", mr, 2)
             if df is not None:
                 M.add(f"ExtMechDiff{ds_k}{hz_k}{ctx_k}{var_k}", f"{df:+.2f}")
             if lo is not None:
@@ -1571,6 +1573,255 @@ def generate_macros(strict=False, quiet=False):
         M.add("EnvHardware", hw.replace("_", "\\_").replace("%", "\\%"))
     else:
         M.add("EnvHardware", "[hardware not recorded: run record\\_runtime\\_env.py on the simulation machine]")
+
+    M.section("Loss variants, direct Mixture-EG, and base-expert loss retraining")
+    def _loss_var_key(name):
+        return (str(name).replace("15", "Fifteen").replace("25", "TwentyFive")
+                .replace("20", "Twenty").replace("-", "").replace("_", ""))
+
+    def _loss_ds_key(raw):
+        r = str(raw).strip().lower()
+        if "weinstock" in r:
+            return "Weinstock"
+        if "cgm" in r:
+            return "Cgmacros"
+        if "hall" in r:
+            return "Hall"
+        if "dubosson" in r:
+            return "Dubosson"
+        return clean_name(raw).capitalize()
+
+    lv_rmse_rows = _read_abs_csv("loss_results/loss_variants_rmse_summary.csv")
+    lv_hypo_rows = _read_abs_csv("loss_results/loss_variants_hypo_matched_far.csv")
+    lv_rmse_map = {}
+    if lv_rmse_rows:
+        for r in lv_rmse_rows:
+            if str(r.get("context", "")).strip().lower() != "full":
+                continue
+            ds_k = _loss_ds_key(r["dataset"])
+            hz_k = horizon_label(r["horizon"])
+            var_k = _loss_var_key(r["variant"])
+            key = f"{ds_k}{hz_k}{var_k}"
+            mr = to_float(r.get("mean_rmse", ""))
+            ma = to_float(r.get("mean_mae", ""))
+            d_se = to_float(r.get("diff_vs_se", ""))
+            lo_se = to_float(r.get("ci95_low_vs_se", ""))
+            hi_se = to_float(r.get("ci95_high_vs_se", ""))
+            d_un = to_float(r.get("diff_vs_uniform", ""))
+            M.num(f"LossVarRMSE{key}", mr, 2)
+            M.num(f"LossVarMAE{key}", ma, 2)
+            if d_se is not None:
+                M.add(f"LossVarDiffSE{key}", f"{d_se:+.2f}")
+            if lo_se is not None:
+                M.add(f"LossVarDiffSELow{key}", f"{lo_se:+.2f}")
+            if hi_se is not None:
+                M.add(f"LossVarDiffSEHigh{key}", f"{hi_se:+.2f}")
+            if d_un is not None:
+                M.add(f"LossVarDiffUni{key}", f"{d_un:+.2f}")
+            lv_rmse_map[(r["dataset"], str(r["horizon"]), r["variant"])] = r
+
+    far_word_lv = {0.65: "SixtyFive", 0.75: "SeventyFive", 1.0: "Hundred"}
+    warn_word_lv = {0: "Zero", 15: "Fifteen"}
+    lv_hypo_map = {}
+    if lv_hypo_rows:
+        for r in lv_hypo_rows:
+            ds_k = _loss_ds_key(r["dataset"])
+            far = round(float(r["false_alerts_per_day"]), 2)
+            w = int(float(r["min_warning_min"]))
+            lv_hypo_map[(r["dataset"], w, far, r["model"])] = r
+            if far not in far_word_lv or w not in warn_word_lv:
+                continue
+            key = f"{ds_k}{_loss_var_key(r['model'])}Warn{warn_word_lv[w]}Far{far_word_lv[far]}"
+            M.num(f"LossVarHypoSens{key}", to_float(r.get("sensitivity_pct", "")), 1)
+            d = to_float(r.get("diff_vs_persistence_pp", ""))
+            lo = to_float(r.get("diff_ci95_low_vs_pers", ""))
+            hi = to_float(r.get("diff_ci95_high_vs_pers", ""))
+            if d is not None:
+                M.add(f"LossVarHypoDiff{key}", f"{d:+.1f}")
+            if lo is not None:
+                M.add(f"LossVarHypoDiffLow{key}", f"{lo:+.1f}")
+            if hi is not None:
+                M.add(f"LossVarHypoDiffHigh{key}", f"{hi:+.1f}")
+
+    retrain_specs = [
+        ("asym_hypo", "ExpertAsymHypo", r"\texttt{asym\_hypo} (4$\times$ low miss)"),
+        ("huber20", "ExpertHuberTwenty", r"\texttt{huber20} ($\delta=20$)"),
+        ("pinball20", "ExpertPinballTwenty", r"\texttt{pinball20} ($\tau=0.20$)"),
+    ]
+    retrain_rmse_map = {}
+    retrain_hypo_map = {}
+    for dir_name, exp_key, _ in retrain_specs:
+        r_rows = _read_abs_csv(f"loss_results/experts_{dir_name}/loss_variants_rmse_summary.csv")
+        for r in r_rows:
+            if str(r.get("context", "")).strip().lower() != "full":
+                continue
+            ds_k = _loss_ds_key(r["dataset"])
+            hz_k = horizon_label(r["horizon"])
+            var_k = _loss_var_key(r["variant"])
+            M.num(f"LossVarRetrainRMSE{exp_key}{ds_k}{hz_k}{var_k}", to_float(r.get("mean_rmse", "")), 2)
+            retrain_rmse_map[(dir_name, r["dataset"], str(r["horizon"]), r["variant"])] = r
+        h_rows = _read_abs_csv(f"loss_results/experts_{dir_name}/loss_variants_hypo_matched_far.csv")
+        for r in h_rows:
+            ds_k = _loss_ds_key(r["dataset"])
+            far = round(float(r["false_alerts_per_day"]), 2)
+            w = int(float(r["min_warning_min"]))
+            retrain_hypo_map[(dir_name, r["dataset"], w, far, r["model"])] = r
+            if far not in far_word_lv or w not in warn_word_lv:
+                continue
+            key = f"{exp_key}{ds_k}{_loss_var_key(r['model'])}Warn{warn_word_lv[w]}Far{far_word_lv[far]}"
+            M.num(f"LossVarRetrainHypoSens{key}", to_float(r.get("sensitivity_pct", "")), 1)
+            d = to_float(r.get("diff_vs_persistence_pp", ""))
+            lo = to_float(r.get("diff_ci95_low_vs_pers", ""))
+            hi = to_float(r.get("diff_ci95_high_vs_pers", ""))
+            if d is not None:
+                M.add(f"LossVarRetrainHypoDiff{key}", f"{d:+.1f}")
+            if lo is not None:
+                M.add(f"LossVarRetrainHypoDiffLow{key}", f"{lo:+.1f}")
+            if hi is not None:
+                M.add(f"LossVarRetrainHypoDiffHigh{key}", f"{hi:+.1f}")
+
+    if lv_rmse_map:
+        def _lv_rmse_cell(row, with_diff=False):
+            if not row:
+                return "---"
+            mr = to_float(row.get("mean_rmse", ""))
+            if mr is None:
+                return "---"
+            if not with_diff:
+                return f"{mr:.2f}"
+            d = to_float(row.get("diff_vs_se", ""))
+            lo = to_float(row.get("ci95_low_vs_se", ""))
+            hi = to_float(row.get("ci95_high_vs_se", ""))
+            if d is None or lo is None or hi is None:
+                return f"{mr:.2f}"
+            return f"{mr:.2f} ({d:+.2f} [{lo:+.2f}, {hi:+.2f}])"
+
+        lv_lines = [
+            r"\begin{table*}[t]",
+            r"\centering",
+            r"\scriptsize",
+            r"\begin{subtable}{\linewidth}\centering",
+            r"\resizebox{\linewidth}{!}{%",
+            r"\begin{tabular}{lcccccccccc}",
+            r"\toprule",
+            r"Cohort & Hor.\ (h) & \texttt{HBML-SE} & \texttt{HBML-MAE} ($\Delta$ [95\% CI]) & \texttt{HBML-Huber15} ($\Delta$ [95\% CI]) & \texttt{HBML-MixEG} ($\Delta$ [95\% CI]) & \texttt{MixEG-Interl} ($\Delta$ [95\% CI]) & \texttt{HBML-AsymHypo} & \texttt{HBML-Pinball20} & \texttt{Uniform} & \texttt{FTL} \\",
+            r"\midrule",
+        ]
+        ds_lv = [("weinstock", "Weinstock 2016"), ("cgmacros", "CGMacros"), ("hall", "Hall 2018"), ("dubosson", "Dubosson T1D")]
+        for di, (ds_raw, ds_disp) in enumerate(ds_lv):
+            if di > 0:
+                lv_lines.append(r"\midrule")
+            for hz in ("0.5", "2", "5"):
+                lv_lines.append(
+                    f"{ds_disp} & {hz} & "
+                    f"{_lv_rmse_cell(lv_rmse_map.get((ds_raw, hz, 'HBML-SE')))} & "
+                    f"{_lv_rmse_cell(lv_rmse_map.get((ds_raw, hz, 'HBML-MAE')), True)} & "
+                    f"{_lv_rmse_cell(lv_rmse_map.get((ds_raw, hz, 'HBML-Huber15')), True)} & "
+                    f"{_lv_rmse_cell(lv_rmse_map.get((ds_raw, hz, 'HBML-MixEG')), True)} & "
+                    f"{_lv_rmse_cell(lv_rmse_map.get((ds_raw, hz, 'HBML-MixEG-interleaved')), True)} & "
+                    f"{_lv_rmse_cell(lv_rmse_map.get((ds_raw, hz, 'HBML-AsymHypo')))} & "
+                    f"{_lv_rmse_cell(lv_rmse_map.get((ds_raw, hz, 'HBML-Pinball20')))} & "
+                    f"{_lv_rmse_cell(lv_rmse_map.get((ds_raw, hz, 'Uniform')))} & "
+                    f"{_lv_rmse_cell(lv_rmse_map.get((ds_raw, hz, 'FTL')))} \\\\"
+                )
+        lv_lines += [
+            r"\bottomrule",
+            r"\end{tabular}%",
+            r"}",
+            r"\caption{Online loss functions and direct Mixture-EG applied to cached Engine~v2.3 MSE base experts (full history).}",
+            r"\end{subtable}",
+            r"\par\medskip",
+            r"\begin{subtable}{\linewidth}\centering",
+            r"\resizebox{\linewidth}{!}{%",
+            r"\begin{tabular}{lccccccc}",
+            r"\toprule",
+            r"Base-expert training loss & Cohort & 0.5 h \texttt{HBML-SE} & 2 h \texttt{HBML-SE} & 5 h \texttt{HBML-SE} & 0.5 h \texttt{HBML-MixEG} & 2 h \texttt{HBML-MixEG} & 0.5 h \texttt{Uniform} \\",
+            r"\midrule",
+        ]
+        retrain_tbl_specs = [("cached MSE", None)] + [(disp, dn) for dn, _, disp in retrain_specs]
+        for ti, (tdisp, dn) in enumerate(retrain_tbl_specs):
+            if ti > 0:
+                lv_lines.append(r"\midrule")
+            for ds_raw, ds_disp in ds_lv:
+                src = lv_rmse_map if dn is None else {(d, h, v): retrain_rmse_map.get((dn, d, h, v)) for (rn, d, h, v) in retrain_rmse_map if rn == dn}
+                lv_lines.append(
+                    f"{tdisp} & {ds_disp} & "
+                    f"{_lv_rmse_cell(src.get((ds_raw, '0.5', 'HBML-SE')))} & "
+                    f"{_lv_rmse_cell(src.get((ds_raw, '2', 'HBML-SE')))} & "
+                    f"{_lv_rmse_cell(src.get((ds_raw, '5', 'HBML-SE')))} & "
+                    f"{_lv_rmse_cell(src.get((ds_raw, '0.5', 'HBML-MixEG')))} & "
+                    f"{_lv_rmse_cell(src.get((ds_raw, '2', 'HBML-MixEG')))} & "
+                    f"{_lv_rmse_cell(src.get((ds_raw, '0.5', 'Uniform')))} \\\\"
+                )
+        lv_lines += [
+            r"\bottomrule",
+            r"\end{tabular}%",
+            r"}",
+            r"\caption{Full base-expert retraining sensitivity: retraining \texttt{XGBoost}, \texttt{NODE}, and \texttt{N-HITS} under \texttt{asym\_hypo}, \texttt{huber20}, and \texttt{pinball20} vs.\ cached MSE experts.}",
+            r"\end{subtable}",
+            r"\caption{\textbf{Alternative online losses, direct Mixture-EG, and base-expert loss retraining across all four cohorts (full history).} In panel (a), $\Delta$ denotes paired cohort-mean RMSE difference relative to \texttt{HBML-SE} (negative indicates lower RMSE than \texttt{HBML-SE}), with 95\% participant-level bootstrap confidence intervals.}",
+            r"\label{tab:loss_variants}",
+            r"\end{table*}",
+        ]
+        with open(os.path.join(TABLES_DIR, "table_loss_variants.tex"), "w", encoding="utf-8") as f:
+            f.write("\n".join(lv_lines) + "\n")
+
+    if lv_hypo_map:
+        def _lv_h_cell(row, with_diff=False):
+            if not row:
+                return "---"
+            s = to_float(row.get("sensitivity_pct", ""))
+            if s is None:
+                return "---"
+            if not with_diff:
+                return f"{s:.1f}"
+            d = to_float(row.get("diff_vs_persistence_pp", ""))
+            lo = to_float(row.get("diff_ci95_low_vs_pers", ""))
+            hi = to_float(row.get("diff_ci95_high_vs_pers", ""))
+            if d is None or lo is None or hi is None:
+                return f"{s:.1f}"
+            return f"{s:.1f} ({d:+.1f} [{lo:+.1f}, {hi:+.1f}])"
+
+        lh_lines = [
+            r"\begin{table*}[t]",
+            r"\centering",
+            r"\scriptsize",
+            r"\resizebox{\linewidth}{!}{%",
+            r"\begin{tabular}{lcccccccc}",
+            r"\toprule",
+            r"Cohort & Base experts & Min.\ warn & FAR/day & \texttt{HBML-SE} ($\Delta$ vs Pers.) & \texttt{HBML-AsymHypo} ($\Delta$ vs Pers.) & \texttt{HBML-Pinball20} ($\Delta$ vs Pers.) & \texttt{HBML-MixEG} ($\Delta$ vs Pers.) & \texttt{Persistence} \\",
+            r"\midrule",
+        ]
+        hypo_cfg = [
+            ("weinstock", "Weinstock 2016", [(0, 0.65), (0, 0.75), (15, 0.65), (15, 0.75)]),
+            ("hall", "Hall 2018", [(0, 0.65), (0, 0.75), (0, 1.0), (15, 0.65), (15, 0.75), (15, 1.0)]),
+        ]
+        src_specs = [("cached MSE", None)] + [(r"\texttt{" + dn.replace("_", r"\_") + "}", dn) for dn, _, _ in retrain_specs]
+        for ci, (ds_raw, ds_disp, pairs) in enumerate(hypo_cfg):
+            if ci > 0:
+                lh_lines.append(r"\midrule")
+            for wmin, fval in pairs:
+                wdisp = r"$\ge 5$~min" if wmin == 0 else rf"$\ge {wmin}$~min"
+                for sdisp, dn in src_specs:
+                    src = lv_hypo_map if dn is None else {(d, w, f, m): retrain_hypo_map.get((dn, d, w, f, m)) for (rn, d, w, f, m) in retrain_hypo_map if rn == dn}
+                    lh_lines.append(
+                        f"{ds_disp} & {sdisp} & {wdisp} & {fval:.2f} & "
+                        f"{_lv_h_cell(src.get((ds_raw, wmin, fval, 'HBML-SE')), True)} & "
+                        f"{_lv_h_cell(src.get((ds_raw, wmin, fval, 'HBML-AsymHypo')), True)} & "
+                        f"{_lv_h_cell(src.get((ds_raw, wmin, fval, 'HBML-Pinball20')), True)} & "
+                        f"{_lv_h_cell(src.get((ds_raw, wmin, fval, 'HBML-MixEG')), True)} & "
+                        f"{_lv_h_cell(src.get((ds_raw, wmin, fval, 'Persistence')), False)} \\\\"
+                    )
+        lh_lines += [
+            r"\bottomrule",
+            r"\end{tabular}%",
+            r"}",
+            r"\caption{\textbf{Matched false-alert rate (FAR) 30-minute hypoglycemia sensitivity across alternative online losses and base-expert training losses.} Values are pooled pre-onset sensitivity (\%) and difference vs.\ current-reading \texttt{Persistence} ($\Delta$ in pp with 2{,}000-resample participant-clustered bootstrap 95\% CI). ``---'' denotes FAR targets below a detector's lowest swept threshold.}",
+            r"\label{tab:loss_variants_hypo}",
+            r"\end{table*}",
+        ]
+        with open(os.path.join(TABLES_DIR, "table_loss_variants_hypo.tex"), "w", encoding="utf-8") as f:
+            f.write("\n".join(lh_lines) + "\n")
 
     # Macros used in the manuscript
     used = set()

@@ -281,6 +281,8 @@ def build_mechanism_context_fig():
 \draw[black!45, dashed, line width=0.5pt] (axis cs:0.75,0) -- (axis cs:4.25,0);
 \addplot[hbmlblue, mark=*, mark size=1.8pt, line width=1.3pt] coordinates {""" + _curve_rel("weinstock", "2", "HBML-shortctx-pool") + r"""};
 \addlegendentry{Weinstock short-ctx}
+\addplot[hbmlteal, densely dotted, mark=diamond*, mark size=1.8pt, line width=1.2pt] coordinates {""" + _curve_rel("weinstock", "2", "HBML-no-XGB-NODE") + r"""};
+\addlegendentry{Weinstock no-XGB/NODE}
 \addplot[hbmlblue, dashed, mark=o, mark size=1.7pt, line width=1.1pt] coordinates {""" + _curve_rel("weinstock", "2", "HBML") + r"""};
 \addlegendentry{Weinstock full pool}
 \addplot[hbmlred, mark=square*, mark size=1.7pt, line width=1.3pt] coordinates {""" + _curve_rel("cgmacros", "2", "HBML-shortctx-pool") + r"""};
