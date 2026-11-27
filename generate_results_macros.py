@@ -1012,6 +1012,10 @@ def generate_macros(strict=False, quiet=False):
             ("HBML", r"\texttt{HBML} (primary 7-expert pool)"),
             ("HBML-interleaved", r"\texttt{HBML-interleaved} ($h+1$ independent copies)"),
             ("HBML-shortctx-pool", r"\texttt{HBML} short-context pool (\texttt{ARIMA}/\texttt{ETS}/\texttt{N-HITS})"),
+        ]
+        if any(k[2] == "HBML-no-XGB-NODE" for k in pm_cells):
+            var_order.append(("HBML-no-XGB-NODE", r"\texttt{HBML} without \texttt{XGBoost} \& \texttt{NODE} (short-ctx + ref.)"))
+        var_order += [
             ("Uniform", r"Uniform ensemble ($p_k = 1/7$)"),
             ("FixedConvex-CV", r"Fixed convex weights (5-fold CV)"),
             ("HBML-no-reference", r"\texttt{HBML} without Persistence \& RunningMean"),

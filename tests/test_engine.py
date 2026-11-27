@@ -523,6 +523,32 @@ def test_alternative_losses_and_mixture_eg():
             assert g.shape == (10,) and h_.shape == (10,) and np.all(h_ > 0) and np.all(g > 0)
 
 
+def test_m2a_shortctx_decomposition_local():
+    """Local test of M2-A: HBML-no-XGB-NODE separates reference-expert removal from full-history XGB/NODE."""
+    import analyze_pool_mechanism as apm
+    rng = np.random.default_rng(7)
+    T = 1000
+    y = 140.0 + 45.0 * np.sin(np.arange(T) * 0.05) + rng.normal(0.0, 2.0, T)
+    cols = list(G.experts)  # ARIMA, ETS, NHITS, NODE, XGBoost, Persistence, RunningMean
+    # Context-dependent noise on ARIMA/ETS/NHITS vs strong RunningMean at 5h & strong NODE/XGB at 2h
+    F_short = np.column_stack([
+        y + rng.normal(0, 22, T),   # ARIMA (degraded at 6h)
+        y + rng.normal(0, 24, T),   # ETS (degraded at 6h)
+        y + rng.normal(0, 25, T),   # NHITS (degraded at 6h)
+        y + rng.normal(0, 7, T),    # NODE (full history)
+        y + rng.normal(0, 8, T),    # XGBoost (full history)
+        y + rng.normal(0, 18, T),   # Persistence
+        y + rng.normal(0, 5, T),    # RunningMean (accurate anchor)
+    ])
+    F_short[:294] = 0.0
+    mask = ev.scored_mask(F_short, y)
+    res_5h = apm.participant_variants(F_short, y, cols, mask, h=60)
+    assert "HBML-no-XGB-NODE" in res_5h and "HBML-shortctx-pool" in res_5h
+    # Retaining RunningMean + Persistence cleanly eliminates the shortctx penalty relative to dropping them
+    assert res_5h["HBML-no-XGB-NODE"] < res_5h["HBML-shortctx-pool"] - 3.0, res_5h
+    assert abs(res_5h["HBML-no-XGB-NODE"] - res_5h["HBML"]) < 2.0, res_5h
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

@@ -110,10 +110,19 @@ def evaluate_cohort(dataset: str, outputs_dir: str, out_dir: str, n_boot_stat: i
                     rmse_sc = ev.rmse(loss_sc, mask)
                 else:
                     rmse_sc = float("nan")
+                nxn_idx = [k for k, c in enumerate(cols) if c not in apm.NO_XGB_NODE_EXCLUDE]
+                if len(nxn_idx) >= 2:
+                    F_nxn = f_mat[:, nxn_idx]
+                    L_nxn = l_mat[:, nxn_idx]
+                    _, loss_nxn = agg.run_named(ecw.PRIMARY_HBML, F_nxn, L_nxn, y, start=START, horizon=h_steps)
+                    rmse_nxn = ev.rmse(loss_nxn, mask)
+                else:
+                    rmse_nxn = float("nan")
                 rmse_uni = ev.rmse((f_mat.mean(axis=1) - y) ** 2, mask)
 
                 res["interleaved_rmse"] = ev.rmse(loss_inter, mask)
                 res["shortctx_rmse"] = rmse_sc
+                res["no_xgb_node_rmse"] = rmse_nxn
                 res["uniform_rmse"] = rmse_uni
                 res["hbml_maxae"] = max_ae(loss_hb, mask)
                 res["exp_maxaes"] = {cols[k]: max_ae(l_mat[:, k], mask) for k in range(len(cols))}
@@ -138,6 +147,7 @@ def evaluate_cohort(dataset: str, outputs_dir: str, out_dir: str, n_boot_stat: i
                     "HBML_SFHDF": r["alt_rmse"] if ecw.PRIMARY_HBML != "HBML-SFHDF" else r["hbml_rmse"],
                     "HBML_Interleaved": r["interleaved_rmse"],
                     "HBML_ShortCtx": r["shortctx_rmse"],
+                    "HBML_NoXGBNODE": r["no_xgb_node_rmse"],
                     "FTL": r["ftl_rmse"],
                     "Uniform": r["uniform_rmse"],
                     "HBML_MaxAE": r["hbml_maxae"],
@@ -162,6 +172,7 @@ def evaluate_cohort(dataset: str, outputs_dir: str, out_dir: str, n_boot_stat: i
                 "BestExpert_MaxAE_mean": float(np.mean([r["exp_maxaes"][best_exp] for r in p_res])),
                 "HBML_Interleaved_mean": float(np.mean([r["interleaved_rmse"] for r in p_res])),
                 "HBML_ShortCtx_mean": float(np.nanmean([r["shortctx_rmse"] for r in p_res])),
+                "HBML_NoXGBNODE_mean": float(np.nanmean([r["no_xgb_node_rmse"] for r in p_res])),
                 "FTL_mean": float(np.mean([r["ftl_rmse"] for r in p_res])),
                 "Uniform_mean": float(np.mean([r["uniform_rmse"] for r in p_res])),
             }
@@ -173,6 +184,7 @@ def evaluate_cohort(dataset: str, outputs_dir: str, out_dir: str, n_boot_stat: i
             variants = {
                 "HBML": hb_arr,
                 "HBML-interleaved": np.array([r["interleaved_rmse"] for r in p_res], dtype=float),
+                "HBML-no-XGB-NODE": np.array([r["no_xgb_node_rmse"] for r in p_res], dtype=float),
                 "HBML-shortctx-pool": np.array([r["shortctx_rmse"] for r in p_res], dtype=float),
                 "FTL": np.array([r["ftl_rmse"] for r in p_res], dtype=float),
                 "Uniform": np.array([r["uniform_rmse"] for r in p_res], dtype=float),

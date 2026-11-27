@@ -64,6 +64,7 @@ def simplex_ls(F, y, n_iter=20000, tol=1e-12):
 
 
 SHORTCTX_EXPERTS = ("ARIMA", "ETS", "NHITS")
+NO_XGB_NODE_EXCLUDE = ("XGBoost", "NODE")
 
 
 def hbml_rmse(F, y, mask, h):
@@ -93,6 +94,9 @@ def participant_variants(F, y, cols, mask, h, w_cv=None):
         res[f"HBML-minus-{c}"] = hbml_rmse(F[:, keep], y, mask, h)
     keep_noref = [i for i, c in enumerate(cols) if c not in ("Persistence", "RunningMean")]
     res["HBML-no-reference"] = hbml_rmse(F[:, keep_noref], y, mask, h)
+    no_xgb_node_idx = [i for i, c in enumerate(cols) if c not in NO_XGB_NODE_EXCLUDE]
+    if len(no_xgb_node_idx) >= 2:
+        res["HBML-no-XGB-NODE"] = hbml_rmse(F[:, no_xgb_node_idx], y, mask, h)
     short_idx = [i for i, c in enumerate(cols) if c in SHORTCTX_EXPERTS]
     if len(short_idx) >= 2:
         res["HBML-shortctx-pool"] = hbml_rmse(F[:, short_idx], y, mask, h)
