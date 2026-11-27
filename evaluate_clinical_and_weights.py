@@ -929,56 +929,90 @@ def write_hypo_tex(rows, out_path, supplement=False):
     ds_disp = {"weinstock": "Weinstock 2016", "cgmacros": "CGMacros"}
     has_chance = bool(rows) and ("chance_sensitivity_pct" in rows[0])
     has_cluster = bool(rows) and ("cluster_ppv_pct" in rows[0])
-    n_num_cols = 9 + (2 if has_chance else 0) + (2 if has_cluster else 0)
-    cols_spec = "lll" + ("c" * n_num_cols)
-    chance_hdr = " & Chance sens.\\ (\\%) & Above chance (pp)" if has_chance else ""
-    cluster_hdr = " & Cluster PPV (\\%)" if has_cluster else ""
-    cal_hdr = " & FAR / cal.\\ day" if has_cluster else ""
-    lines = [
-        r"\begin{table*}[t]",
-        r"\centering",
-        r"\scriptsize",
-        r"\resizebox{\linewidth}{!}{%",
-        f"\\begin{{tabular}}{{{cols_spec}}}",
-        r"\toprule",
-        f"Dataset & Horizon & Model & $N$ & Episodes & Pre-onset sens.\\ (\\%){chance_hdr} & Lead (all, min) & Lead (det., min) & Point PPV (\\%) & Point $F_1$ (\\%){cluster_hdr} & False alerts / day{cal_hdr} & Parkes A+B (\\%) \\\\",
-        r"\midrule",
-    ]
-    prev_ds = None
-    for r in rows:
-        ds = ds_disp.get(r["dataset"], r["dataset"])
-        if prev_ds is not None and prev_ds != ds:
-            lines.append(r"\midrule")
-        prev_ds = ds
-        m = r["model"]
-        if m == "BestExpert":
-            m = f"Best expert ({r['best_expert_name']})"
-        def _fmt1(v):
-            if v is None or str(v).strip() == "":
-                return "---"
-            fv = float(v)
-            return "---" if math.isnan(fv) else f"{fv:.1f}"
 
-        def _fmts1(v):
-            if v is None or str(v).strip() == "":
-                return "---"
-            fv = float(v)
-            if math.isnan(fv):
-                return "---"
-            if abs(round(fv, 1)) < 1e-9:
-                return "+0.0"
-            return f"{fv:+.1f}"
-        ch_cells = f" & {_fmt1(r.get('chance_sensitivity_pct'))} & {_fmts1(r.get('above_chance_pp'))}" if has_chance else ""
-        cl_cell = f" & {_fmt1(r.get('cluster_ppv_pct'))}" if has_cluster else ""
-        cal_val = r.get("false_alerts_per_calendar_day")
-        cal_cell = (f" & {float(cal_val):.2f}" if (has_cluster and cal_val not in (None, "")) else (" & ---" if has_cluster else ""))
-        lines.append(
-            f"{ds} & {r['horizon']} hr & {m} & {r['n_participants']} & {r['n_episodes']} & "
-            f"{_fmt1(r['episode_sensitivity_pct'])}{ch_cells} & {_fmt1(r['mean_lead_time_min'])} & "
-            f"{_fmt1(r['mean_lead_time_detected_min'])} & "
-            f"{_fmt1(r['point_ppv_pct'])} & {_fmt1(r['point_f1_pct'])}{cl_cell} & "
-            f"{float(r['false_alerts_per_day']):.2f}{cal_cell} & {_fmt1(r['parkes_ab_pct'])} \\\\"
-        )
+    def _fmt1(v):
+        if v is None or str(v).strip() == "":
+            return "---"
+        fv = float(v)
+        return "---" if math.isnan(fv) else f"{fv:.1f}"
+
+    def _fmts1(v):
+        if v is None or str(v).strip() == "":
+            return "---"
+        fv = float(v)
+        if math.isnan(fv):
+            return "---"
+        if abs(round(fv, 1)) < 1e-9:
+            return "+0.0"
+        return f"{fv:+.1f}"
+
+    def _rows_a():
+        out, prev = [], None
+        for r in rows:
+            ds = ds_disp.get(r["dataset"], r["dataset"])
+            if prev is not None and prev != ds:
+                out.append(r"\midrule")
+            prev = ds
+            m = f"Best ({r['best_expert_name']})" if r["model"] == "BestExpert" else r["model"]
+            ch = f" & {_fmt1(r.get('chance_sensitivity_pct'))} & {_fmts1(r.get('above_chance_pp'))}" if has_chance else ""
+            out.append(
+                f"{ds} & {r['horizon']} h & {m} & {r['n_participants']} & {r['n_episodes']} & "
+                f"{_fmt1(r['episode_sensitivity_pct'])}{ch} & {_fmt1(r['mean_lead_time_min'])} & "
+                f"{_fmt1(r['mean_lead_time_detected_min'])} \\\\"
+            )
+        return out
+
+    def _rows_b():
+        out, prev = [], None
+        for r in rows:
+            ds = ds_disp.get(r["dataset"], r["dataset"])
+            if prev is not None and prev != ds:
+                out.append(r"\midrule")
+            prev = ds
+            m = f"Best ({r['best_expert_name']})" if r["model"] == "BestExpert" else r["model"]
+            cl = f" & {_fmt1(r.get('cluster_ppv_pct'))}" if has_cluster else ""
+            cal_val = r.get("false_alerts_per_calendar_day")
+            cal = (f" & {float(cal_val):.2f}" if (has_cluster and cal_val not in (None, "")) else (" & ---" if has_cluster else ""))
+            out.append(
+                f"{ds} & {r['horizon']} h & {m} & {_fmt1(r['point_ppv_pct'])} & "
+                f"{_fmt1(r['point_f1_pct'])}{cl} & {float(r['false_alerts_per_day']):.2f}{cal} & "
+                f"{_fmt1(r['parkes_ab_pct'])} \\\\"
+            )
+        return out
+
+    cols_a = "lll" + ("c" * (5 + (2 if has_chance else 0)))
+    ch_hdr = r" & \shortstack{Chance\\(\%)} & \shortstack{Above\\chance (pp)}" if has_chance else ""
+    cols_b = "lll" + ("c" * (4 + (2 if has_cluster else 0)))
+    cl_hdr = r" & \shortstack{Cluster\\PPV (\%)}" if has_cluster else ""
+    cal_hdr = r" & \shortstack{FAR /\\cal.\ day}" if has_cluster else ""
+
+    lines = [
+        r"\begin{table}[htbp]",
+        r"\centering",
+        r"\footnotesize",
+        r"\setlength{\tabcolsep}{3.5pt}",
+        r"\begin{subtable}{\linewidth}\centering",
+        f"\\begin{{tabular*}}{{\\linewidth}}{{@{{\\extracolsep{{\\fill}}}} {cols_a}}}",
+        r"\toprule",
+        f"Dataset & Hor. & Model & $N$ & Episodes & \\shortstack{{Pre-onset\\\\sens.\\ (\\%)}}{ch_hdr} & \\shortstack{{Lead\\\\(all, min)}} & \\shortstack{{Lead\\\\(det., min)}} \\\\",
+        r"\midrule",
+    ] + _rows_a() + [
+        r"\bottomrule",
+        r"\end{tabular*}",
+        r"\caption{Pre-onset episode sensitivity ($<70$~mg/dL), circular-shift chance comparison, and warning lead times.}",
+        r"\end{subtable}",
+        r"\par\medskip",
+        r"\begin{subtable}{\linewidth}\centering",
+        f"\\begin{{tabular*}}{{\\linewidth}}{{@{{\\extracolsep{{\\fill}}}} {cols_b}}}",
+        r"\toprule",
+        f"Dataset & Hor. & Model & \\shortstack{{Point\\\\PPV (\\%)}} & \\shortstack{{Point\\\\$F_1$ (\\%)}}{cl_hdr} & \\shortstack{{False alerts\\\\/ day}}{cal_hdr} & \\shortstack{{Parkes\\\\A+B (\\%)}} \\\\",
+        r"\midrule",
+    ] + _rows_b() + [
+        r"\bottomrule",
+        r"\end{tabular*}",
+        r"\caption{Timestep precision, cluster PPV, false-alert rates, and Parkes consensus error grid Zones A+B.}",
+        r"\end{subtable}",
+    ]
     if supplement:
         cap = (
             r"\caption{\textbf{Descriptive 2-hour and 5-hour pre-onset hypoglycemia ($<70$~mg/dL) detection metrics and Parkes consensus error grid performance (full-history context).} "
@@ -992,13 +1026,13 @@ def write_hypo_tex(rows, out_path, supplement=False):
             r"True hypoglycemic episodes are runs of $\ge 3$ real readings ($15$~min) below $70$~mg/dL on the full observed trajectory, merged when $<30$~min apart, across the $N$ retained participants; "
             r"left-censored episodes (no reading $\ge 70$~mg/dL in the preceding 30~min) and episodes with no forecast issued before onset are excluded from ``Episodes''. "
             r"Pre-onset episode sensitivity counts episodes detected (one-to-one, by the earliest alert) by a forecast below 70~mg/dL issued strictly before onset ($t_{\text{issue}} = t - h < t_{\text{start}}$). "
-            + (r"``Chance sens.'' and ``Above chance'' report expected pre-onset sensitivity under circular time-shifted alerts within each participant and the net gain over chance in percentage points. " if has_chance else "")
+            + (r"``Chance'' and ``Above chance'' report expected pre-onset sensitivity under circular time-shifted alerts within each participant and the net gain over chance in percentage points. " if has_chance else "")
             + r"``Lead (all, min)'' reports the unconditional mean warning time prior to episode onset across all episodes (counting missed episodes as $0$~min), whereas ``Lead (det., min)'' averages over detected episodes. "
             r"Point PPV and $F_1$ evaluate timestep-level hypoglycemia classification; Cluster PPV reports the percentage of 30-min merged alert clusters coinciding with a real reading $<70$~mg/dL within $\pm 10$~min; false alerts per scored participant-day (and per elapsed calendar day, FAR / cal.\ day) count uncorroborated alert clusters; "
             r"and Parkes A+B reports participant-averaged proportions in Zones A and B using the Parkes Type 2 grid for CGMacros participants with type 2 diabetes and the Type 1 grid otherwise. (Descriptive 2- and 5-hour metrics appear in Supplementary Table~\ref{tab:hypoglycemia_events_supp}.)}"
         )
         lbl = r"\label{tab:hypoglycemia_events}"
-    lines += [r"\bottomrule", r"\end{tabular}%", r"}", cap, lbl, r"\end{table*}"]
+    lines += [cap, lbl, r"\end{table}"]
     with open(out_path, "w") as f:
         f.write("\n".join(lines) + "\n")
 
@@ -1015,13 +1049,13 @@ def write_regime_tex(rows, out_path):
         "HYPO_TRANS": "Hypoglycemic Transition",
     }
     lines = [
-        r"\begin{table*}[t]",
+        r"\begin{table}[htbp]",
         r"\centering",
-        r"\scriptsize",
-        r"\resizebox{\linewidth}{!}{%",
-        r"\begin{tabular}{llccccc}",
+        r"\footnotesize",
+        r"\setlength{\tabcolsep}{3.5pt}",
+        r"\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}} llccccc}",
         r"\toprule",
-        r"Dataset & Operational regime & $N$ & Timestep share (\%) & HBML RMSE (mg/dL) & Best expert (RMSE, mg/dL) & Most frequent instantaneous winner (share, \%) \\",
+        r"Dataset & Operational regime & $N$ & \shortstack{Timestep\\share (\%)} & \shortstack{\texttt{HBML} RMSE\\(mg/dL)} & \shortstack{Best expert\\(RMSE, mg/dL)} & \shortstack{Most frequent instant\\winner (share, \%)} \\",
         r"\midrule",
     ]
     prev_ds = None
@@ -1038,13 +1072,12 @@ def write_regime_tex(rows, out_path):
         )
     lines += [
         r"\bottomrule",
-        r"\end{tabular}%",
-        r"}",
+        r"\end{tabular*}",
         r"\caption{\textbf{Forecasting accuracy and expert selection frequency across operational glycemic regimes (30-minute horizon, full-history context).} "
         r"Scored timesteps are partitioned into seven mutually exclusive operational regimes in priority order (slow-moving glucose outside 70--180~mg/dL is Stable Out-of-Range, not Stable Euglycemia). "
         r"Columns report the number of participants $N$ contributing timesteps in each regime, the percentage of scored timesteps in each regime, cohort-mean participant-level RMSE for HBML and for the lowest-RMSE single expert in that regime, and the most frequent instantaneous winner: the constituent expert with the lowest instantaneous squared error at the largest share of timesteps in that regime (a property of the experts, not of HBML's weights).}",
         r"\label{tab:regime_summary}",
-        r"\end{table*}",
+        r"\end{table}",
     ]
     with open(out_path, "w") as f:
         f.write("\n".join(lines) + "\n")

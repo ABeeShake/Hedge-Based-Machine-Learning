@@ -224,8 +224,9 @@ def stage_evaluate(a):
 
 def write_tex(df):
     lab = {"weinstock": "Weinstock", "cgmacros": "CGMacros"}
-    lines = [r"\begin{table*}[t]", r"\centering", r"\small", r"\begin{tabular}{lllcccccc}", r"\toprule",
-             r"Training & Dataset & Horizon (hr) & $N$ & Pop-NHITS & Pop-XGBoost & HBML & HBML + population & $p$ (added) \\",
+    lines = [r"\begin{table}[htbp]", r"\centering", r"\small", r"\setlength{\tabcolsep}{4pt}",
+             r"\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}} lllcccccc}", r"\toprule",
+             r"Training & Dataset & Hor.\ (hr) & $N$ & Pop-NHITS & Pop-XGBoost & HBML & HBML + pop. & $p$ (added) \\",
              r"\midrule"]
     for _, r in df.iterrows():
         vals = [r["Pop-NHITS_rmse"], r["Pop-XGBoost_rmse"], r["HBML_rmse"], r["HBML+Pop_rmse"]]
@@ -233,13 +234,13 @@ def write_tex(df):
         cells = [(f"\\textbf{{{v:.2f}}}" if abs(v - lo) < 5e-3 else f"{v:.2f}") for v in vals]
         lines.append(f"{'Within-cohort' if r.scheme == 'within' else 'Cross-cohort'} & {lab[r.dataset]} & {r.horizon} & "
                      f"{int(r.n)} & " + " & ".join(cells) + f" & {ev.tex_p(r['pop_added_vs_hbml_wilcoxon_p'])} \\\\")
-    lines += [r"\bottomrule", r"\end{tabular}",
+    lines += [r"\bottomrule", r"\end{tabular*}",
               r"\caption{\textbf{Personal HBML compared with population-trained models.} Mean participant-level RMSE "
               r"(mg/dL), full-history context. Pop-NHITS and Pop-XGBoost are trained on other participants (within-cohort: "
               r"participant-level k-fold; cross-cohort: trained on the other dataset) and applied without online updates. "
               r"HBML uses only each participant's own data; HBML + population adds the two population models to its expert "
               r"pool. $p$: two-sided Wilcoxon signed-rank test of HBML + population against HBML.}",
-              r"\label{tab:population_comparison}", r"\end{table*}"]
+              r"\label{tab:population_comparison}", r"\end{table}"]
     with open(os.path.join(TABLES, "table_population_comparison.tex"), "w") as f:
         f.write("\n".join(lines) + "\n")
 

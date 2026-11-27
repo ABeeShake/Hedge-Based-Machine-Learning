@@ -689,13 +689,13 @@ def generate_macros(strict=False, quiet=False):
         if prim_code == "SFHDF":
             ablation_order = [ablation_order[1], ablation_order[2], ablation_order[0]] + ablation_order[3:]
         t_lines = [
-            r"\begin{table*}[t]",
+            r"\begin{table}[htbp]",
             r"\centering",
-            r"\scriptsize",
-            r"\resizebox{\linewidth}{!}{%",
-            r"\begin{tabular}{llccccc}",
+            r"\footnotesize",
+            r"\setlength{\tabcolsep}{3.5pt}",
+            r"\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}} l>{\raggedright\arraybackslash}p{0.42\linewidth}ccccc}",
             r"\toprule",
-            r"Dataset & Aggregator variant & 0.5 hr (Full) & 2 hr (Full) & 5 hr (Full) & Mean $\Delta\%$ & Wins / $N_{\text{cfg}}$ \\",
+            r"Dataset & Aggregator variant & \shortstack{0.5 hr\\(Full)} & \shortstack{2 hr\\(Full)} & \shortstack{5 hr\\(Full)} & \shortstack{Mean\\$\Delta\%$} & \shortstack{Wins /\\$N_{\text{cfg}}$} \\",
             r"\midrule",
         ]
         for ds_idx, (ds_k, ds_disp) in enumerate([("Weinstock", "Weinstock 2016"), ("Cgmacros", "CGMacros")]):
@@ -714,15 +714,14 @@ def generate_macros(strict=False, quiet=False):
                 t_lines.append(f"{ds_disp} & {vlabel} & {s30} & {s2h} & {s5h} & {mch}\\% & {wns} \\\\")
         t_lines += [
             r"\bottomrule",
-            r"\end{tabular}%",
-            r"}",
+            r"\end{tabular*}",
             r"\caption{\textbf{Ablation across online aggregation rules, loss-scale estimators, Follow-the-Leader, and Fixed-Share mixing schedules.} "
             r"All variants aggregate the identical constituent expert forecasts over the identical retained participant cohorts and evaluation windows. "
             r"Columns 3--5 report cohort-mean participant-level RMSE (mg/dL) in the full-history configuration at the 30-minute, 2-hour, and 5-hour horizons. "
             f"``Mean $\\Delta\\%$'' is the mean percentage change in RMSE relative to {prim_label_name} across evaluated horizon $\\times$ context configurations per dataset (negative values indicate lower error than {prim_label_name}; positive values indicate higher error). "
             f"``Wins / $N_{{\\text{{cfg}}}}$'' counts configurations in which the variant achieved lower cohort-mean RMSE than {prim_label_name}.}}",
             r"\label{tab:aggregator_ablation}",
-            r"\end{table*}",
+            r"\end{table}",
         ]
         with open(os.path.join(TABLES_DIR, "table_aggregator_ablation.tex"), "w", encoding="utf-8") as f:
             f.write("\n".join(t_lines) + "\n")
@@ -944,16 +943,16 @@ def generate_macros(strict=False, quiet=False):
                 return f"{d:+.1f}"
             return f"{d:+.1f} [{lo:+.1f}, {hi:+.1f}]"
         mfar_lines = [
-            r"\begin{table*}[t]",
+            r"\begin{table}[htbp]",
             r"\centering",
-            r"\scriptsize",
-            r"\resizebox{\linewidth}{!}{%",
-            r"\begin{tabular}{cccccc}",
+            r"\footnotesize",
+            r"\setlength{\tabcolsep}{4pt}",
+            r"\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}} lccccc}",
             r"\toprule",
-            r"Min.\ warning & False alerts/day & HBML sens.\ \% [95\% CI] & Best expert (ARIMA) [95\% CI] & Persistence [95\% CI] & HBML $-$ Persistence (pp) [95\% CI] \\",
+            r"\shortstack{Min.\\warning} & \shortstack{False alerts\\/ day} & \shortstack{HBML sens.\\\% [95\% CI]} & \shortstack{Best expert (ARIMA)\\{[95\% CI]}} & \shortstack{Persistence\\{[95\% CI]}} & \shortstack{HBML $-$ Persistence\\(pp) [95\% CI]} \\",
             r"\midrule",
         ]
-        warn_disp = {0: r"$\ge 5$~min (any pre-onset)", 10: r"$\ge 10$~min", 15: r"$\ge 15$~min", 20: r"$\ge 20$~min"}
+        warn_disp = {0: r"$\ge 5$~min", 10: r"$\ge 10$~min", 15: r"$\ge 15$~min", 20: r"$\ge 20$~min"}
         for wi, wmin in enumerate((0, 10, 15, 20)):
             if wi > 0:
                 mfar_lines.append(r"\midrule")
@@ -966,11 +965,10 @@ def generate_macros(strict=False, quiet=False):
                 )
         mfar_lines += [
             r"\bottomrule",
-            r"\end{tabular}%",
-            r"}",
+            r"\end{tabular*}",
             r"\caption{\textbf{30-minute Weinstock pre-onset hypoglycemia sensitivity at matched false-alert rates across minimum warning times ($\ge 5$, $10$, $15$, and $20$~min).} Values are pooled pre-onset sensitivities (\%) across \HypoEpisodesWeinstockThirtyMin{} evaluable episodes (\HypoParticipantsWithEpisodesWeinstockThirtyMin{} contributing of \NWeinstockThirtyMin{} retained participants) with 2,000-resample participant-clustered bootstrap 95\% confidence intervals obtained by interpolating each detector's 70--90~mg/dL threshold sweep without extrapolation (``---'' marks false-alert rates below ARIMA's minimum operating rate of \HypoFalseAlertsDayBestExpertWeinstockThirtyMin{} alerts/day). Paired differences ``HBML $-$ Persistence'' show HBML sensitivity minus current-reading persistence sensitivity at each matched false-alert rate.}",
             r"\label{tab:hypoglycemia_matched_far}",
-            r"\end{table*}",
+            r"\end{table}",
         ]
         with open(os.path.join(TABLES_DIR, "table_hypoglycemia_matched_far.tex"), "w", encoding="utf-8") as f:
             f.write("\n".join(mfar_lines) + "\n")
@@ -1028,18 +1026,20 @@ def generate_macros(strict=False, quiet=False):
             ("HBML-minus-RunningMean", r"\texttt{HBML} minus \texttt{RunningMean}"),
         ]
         pm_lines = [
-            r"\begin{table*}[t]",
+            r"\begin{table}[htbp]",
             r"\centering",
-            r"\scriptsize",
-            r"\resizebox{\linewidth}{!}{%",
-            r"\begin{tabular}{llccc}",
+            r"\footnotesize",
+            r"\setlength{\tabcolsep}{3pt}",
+            r"\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}} >{\raggedright\arraybackslash}p{0.27\linewidth}ccc}",
             r"\toprule",
-            r"Dataset & Pool / weighting variant & 0.5 hr RMSE ($\Delta$, 95\% CI) & 2 hr RMSE ($\Delta$, 95\% CI) & 5 hr RMSE ($\Delta$, 95\% CI) \\",
+            r"Pool / weighting variant & \shortstack{0.5 hr RMSE\\($\Delta$ [95\% CI])} & \shortstack{2 hr RMSE\\($\Delta$ [95\% CI])} & \shortstack{5 hr RMSE\\($\Delta$ [95\% CI])} \\",
             r"\midrule",
         ]
         for ds_idx, (ds_raw, ds_disp) in enumerate([("weinstock", "Weinstock 2016"), ("cgmacros", "CGMacros")]):
             if ds_idx > 0:
                 pm_lines.append(r"\midrule")
+            pm_lines.append(rf"\multicolumn{{4}}{{l}}{{\textbf{{{ds_disp}}}}} \\")
+            pm_lines.append(r"\midrule")
             for vraw, vdisp in var_order:
                 cells = []
                 for hz_k in ("ThirtyMin", "TwoHour", "FiveHour"):
@@ -1050,15 +1050,14 @@ def generate_macros(strict=False, quiet=False):
                         cells.append(f"{val[0]:.2f}")
                     else:
                         mr, df, lo, hi = val
-                        cells.append(f"{mr:.2f} ({df:+.2f} [{lo:+.2f}, {hi:+.2f}])")
-                pm_lines.append(f"{ds_disp} & {vdisp} & " + " & ".join(cells) + r" \\")
+                        cells.append(f"{mr:.2f} ({df:+.2f} [{lo:+.2f},{hi:+.2f}])")
+                pm_lines.append(f"{vdisp} & " + " & ".join(cells) + r" \\")
         pm_lines += [
             r"\bottomrule",
-            r"\end{tabular}%",
-            r"}",
+            r"\end{tabular*}",
             r"\caption{\textbf{Pool mechanism diagnostics on cached engine v2.3 full-history forecasts: leave-one-expert-out ablations, reference-free pool, uniform ensemble, and 5-fold cross-validated fixed convex weights.} Cohort-mean RMSE (mg/dL) and paired cohort-mean difference relative to primary \texttt{HBML} (positive values indicate higher RMSE than \texttt{HBML}; negative values indicate lower RMSE), with 5{,}000-resample participant-level bootstrap 95\% confidence intervals.}",
             r"\label{tab:pool_mechanism}",
-            r"\end{table*}",
+            r"\end{table}",
         ]
         with open(os.path.join(TABLES_DIR, "table_pool_mechanism.tex"), "w", encoding="utf-8") as f:
             f.write("\n".join(pm_lines) + "\n")
@@ -1072,8 +1071,9 @@ def generate_macros(strict=False, quiet=False):
             return list(csv.DictReader(f))
 
     M.section("External validation cohorts (Hall 2018 & Dubosson D1NAMO)")
-    ext_tex_rows = []
-    for ds_raw, ds_k, ds_disp in (("hall", "Hall", "Hall 2018"), ("dubosson", "Dubosson", "Dubosson (D1NAMO T1D)")):
+    ext_tex_a = []
+    ext_tex_b = []
+    for ds_raw, ds_k, ds_disp in (("hall", "Hall", "Hall 2018"), ("dubosson", "Dubosson", "Dubosson T1D")):
         r_sum = _read_abs_csv(f"external_results/{ds_raw}/rmse_summary.csv")
         st_rows = _read_abs_csv(f"external_results/{ds_raw}/statistical_tests_best_expert.csv")
         mech_rows = _read_abs_csv(f"external_results/{ds_raw}/pool_mechanism_summary.csv")
@@ -1156,12 +1156,17 @@ def generate_macros(strict=False, quiet=False):
                 d = to_float(st_r.get("paired_diff_mean", ""))
                 tlo = to_float(st_r.get("tost_boot_ci90_low", ""))
                 thi = to_float(st_r.get("tost_boot_ci90_high", ""))
-                ext_tex_rows.append(
+                ext_tex_a.append(
                     f"{ds_disp} & {r_s['horizon']} & {r_s['context']} & {r_s['n']} & "
                     f"{float(r_s['HBML_mean']):.2f} & {r_s['best_expert']} ({float(r_s['BestExpert_mean']):.2f}) & "
-                    f"{d:+.2f} [{tlo:+.2f}, {thi:+.2f}] & {tex_p(pbh)} & {tex_p(tp)} & {tex_p(trp)} & "
-                    f"{float(r_s['Uniform_mean']):.2f} & {float(r_s['FTL_mean']):.2f} & "
-                    f"{float(r_s['HBML_Interleaved_mean']):.2f} & {float(r_s['HBML_ShortCtx_mean']):.2f} \\\\"
+                    f"{d:+.2f} [{tlo:+.2f}, {thi:+.2f}] & {tex_p(pbh)} & {tex_p(tp)} & {tex_p(trp)} \\\\"
+                )
+                nxn = to_float(r_s.get("HBML_NoXGBNODE_mean", ""))
+                nxn_s = f"{nxn:.2f}" if nxn is not None else "---"
+                ext_tex_b.append(
+                    f"{ds_disp} & {r_s['horizon']} & {r_s['context']} & "
+                    f"{float(r_s['HBML_mean']):.2f} & {float(r_s['Uniform_mean']):.2f} & {float(r_s['FTL_mean']):.2f} & "
+                    f"{float(r_s['HBML_Interleaved_mean']):.2f} & {float(r_s['HBML_ShortCtx_mean']):.2f} & {nxn_s} \\\\"
                 )
 
         for r in mech_rows:
@@ -1249,19 +1254,19 @@ def generate_macros(strict=False, quiet=False):
                 M.add(f"ExtHall{ph}BestName{hz_k}", bm)
                 M.num(f"ExtHall{ph}BestRMSE{hz_k}", exp_m[bm], 2)
 
-    if ext_tex_rows:
+    if ext_tex_a:
         ext_lines = [
-            r"\begin{table*}[t]",
+            r"\begin{table}[htbp]",
             r"\centering",
-            r"\scriptsize",
-            r"\resizebox{\linewidth}{!}{%",
-            r"\begin{tabular}{lccccccccccccc}",
+            r"\footnotesize",
+            r"\setlength{\tabcolsep}{2.5pt}",
+            r"\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}} lccccccccc}",
             r"\toprule",
-            r"Cohort & Hor.\ (h) & Ctx & $N$ & \texttt{HBML} & Best expert & Paired $\Delta$ [90\% CI] & $p_{\mathrm{BH}}$ & $p_{\mathrm{TOST}}$ ($\pm 1.0$) & $p_{\mathrm{TOST}}$ (5\%) & \texttt{Uniform} & \texttt{FTL} & Interleaved & Short-ctx \\",
+            r"Cohort & \shortstack{Hor.\\(h)} & Ctx & $N$ & \texttt{HBML} & \shortstack{Best expert\\(RMSE)} & \shortstack{Paired $\Delta$\\{[90\% CI]}} & $p_{\mathrm{BH}}$ & \shortstack{$p_{\mathrm{TOST}}$\\($\pm 1.0$)} & \shortstack{$p_{\mathrm{TOST}}$\\(5\%)} \\",
             r"\midrule",
         ]
         prev_ds = None
-        for ln in ext_tex_rows:
+        for ln in ext_tex_a:
             cur_ds = ln.split("&", 1)[0].strip()
             if prev_ds is not None and cur_ds != prev_ds:
                 ext_lines.append(r"\midrule")
@@ -1269,11 +1274,33 @@ def generate_macros(strict=False, quiet=False):
             ext_lines.append(ln)
         ext_lines += [
             r"\bottomrule",
-            r"\end{tabular}%",
-            r"}",
-            r"\caption{\textbf{Confirmatory external cohort validation on untouched GlucoBench cohorts (Hall 2018, $N=\ExtNHall$; Dubosson D1NAMO T1D, $N=\ExtNDubosson$) using locked Engine v2.3.} Cohort-mean RMSE (mg/dL), leading constituent expert, paired difference ($\text{RMSE}_{\text{best}} - \text{RMSE}_{\text{HBML}}$, mg/dL) with 90\% bootstrap TOST interval, BH-adjusted Wilcoxon $p$-value, $\pm 1.0$~mg/dL and $\pm 5\%$ relative TOST $p$-values, equal-weight \texttt{Uniform}, Follow-the-Leader (\texttt{FTL}), $(h+1)$-learner interleaved variant, and equal-context \{\texttt{ARIMA},\texttt{ETS},\texttt{N-HITS}\} sub-pool.}",
+            r"\end{tabular*}",
+            r"\caption{\textbf{Confirmatory external cohort validation on untouched GlucoBench cohorts (Hall 2018, $N=\ExtNHall$; Dubosson D1NAMO T1D, $N=\ExtNDubosson$) using locked Engine v2.3 — primary accuracy and equivalence.} Cohort-mean RMSE (mg/dL), leading constituent expert, paired difference ($\text{RMSE}_{\text{best}} - \text{RMSE}_{\text{HBML}}$, mg/dL) with 90\% bootstrap TOST interval, BH-adjusted Wilcoxon $p$-value, and $\pm 1.0$~mg/dL and $\pm 5\%$ relative TOST $p$-values (comparator aggregators and sub-pools continue below).}",
             r"\label{tab:external_validation}",
-            r"\end{table*}",
+            r"\end{table}",
+            r"",
+            r"\begin{table}[htbp]",
+            r"\ContinuedFloat",
+            r"\centering",
+            r"\footnotesize",
+            r"\setlength{\tabcolsep}{3.5pt}",
+            r"\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}} lcccccccc}",
+            r"\toprule",
+            r"Cohort & \shortstack{Hor.\\(h)} & Ctx & \texttt{HBML} & \texttt{Uniform} & \texttt{FTL} & Interleaved & \shortstack{Short-ctx\\pool} & \shortstack{No \texttt{XGB}/\\\texttt{NODE}} \\",
+            r"\midrule",
+        ]
+        prev_ds = None
+        for ln in ext_tex_b:
+            cur_ds = ln.split("&", 1)[0].strip()
+            if prev_ds is not None and cur_ds != prev_ds:
+                ext_lines.append(r"\midrule")
+            prev_ds = cur_ds
+            ext_lines.append(ln)
+        ext_lines += [
+            r"\bottomrule",
+            r"\end{tabular*}",
+            r"\caption{\textbf{Confirmatory external cohort validation (continued) — aggregator baselines and sub-pool sensitivity.} Cohort-mean RMSE (mg/dL) for primary \texttt{HBML-SFH-Sqrt}, equal-weight \texttt{Uniform}, Follow-the-Leader (\texttt{FTL}), $(h+1)$-learner interleaved variant, equal-context \{\texttt{ARIMA},\texttt{ETS},\texttt{N-HITS}\} sub-pool, and reference-retained pool excluding \texttt{XGBoost} and \texttt{NODE}.}",
+            r"\end{table}",
         ]
         with open(os.path.join(TABLES_DIR, "table_external_validation.tex"), "w", encoding="utf-8") as f:
             f.write("\n".join(ext_lines) + "\n")
@@ -1382,35 +1409,35 @@ def generate_macros(strict=False, quiet=False):
 
     if coh_tex_rows or gap_tex_rows:
         va_lines = [
-            r"\begin{table*}[t]",
+            r"\begin{table}[htbp]",
             r"\centering",
-            r"\scriptsize",
+            r"\footnotesize",
+            r"\setlength{\tabcolsep}{3pt}",
             r"\begin{subtable}{\linewidth}\centering",
-            r"\begin{tabular}{llcccccc}",
+            r"\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}} llcccccc}",
             r"\toprule",
-            r"Horizon & Cohort definition & $N$ & \texttt{HBML} RMSE & Best expert RMSE & Diff ($\text{best}-\text{HBML}$) & Wilcoxon $p$ & $p_{\mathrm{TOST}}$ ($\pm 1.0$) \\",
+            r"Horizon & \shortstack{Cohort\\definition} & $N$ & \shortstack{\texttt{HBML}\\RMSE} & \shortstack{Best expert\\RMSE} & \shortstack{Diff\\($\text{best}-\text{HBML}$)} & \shortstack{Wilcoxon\\$p$} & \shortstack{$p_{\mathrm{TOST}}$\\($\pm 1.0$)} \\",
             r"\midrule",
         ] + coh_tex_rows + [
             r"\bottomrule",
-            r"\end{tabular}",
+            r"\end{tabular*}",
             r"\caption{Weinstock 2016 eligibility sensitivity across all scorable ($N=200$), retained ($\ge 288$), and common ($N=195$) cohorts (full history).}",
             r"\end{subtable}",
             r"\par\medskip",
             r"\begin{subtable}{\linewidth}\centering",
-            r"\resizebox{\linewidth}{!}{%",
-            r"\begin{tabular}{llcccccccc}",
+            r"\setlength{\tabcolsep}{2pt}",
+            r"\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}} llcccccccc}",
             r"\toprule",
-            r"Horizon & Missingness tertile & $N$ & Missing (\%) & Bridged (\%) & \texttt{HBML} RMSE & Best expert RMSE & Diff & Hypo sens.\ (\%) & Cluster PPV (\%) \\",
+            r"Horizon & \shortstack{Missingness\\tertile} & $N$ & \shortstack{Missing\\(\%)} & \shortstack{Bridged\\(\%)} & \shortstack{\texttt{HBML}\\RMSE} & \shortstack{Best expert\\RMSE} & Diff & \shortstack{Hypo sens.\\(\%)} & \shortstack{Cluster PPV\\(\%)} \\",
             r"\midrule",
         ] + gap_tex_rows + [
             r"\bottomrule",
-            r"\end{tabular}%",
-            r"}",
+            r"\end{tabular*}",
             r"\caption{Weinstock 2016 stratification by total missing-slot tertile (full history; CGMacros has 0.0\% missingness throughout).}",
             r"\end{subtable}",
             r"\caption{\textbf{Zero-retraining validation audits on cached Engine v2.3 Weinstock outputs.} Panel (a) confirms invariance across participant inclusion thresholds; panel (b) confirms predictive accuracy and pre-onset hypoglycemia safety under heavy missingness and bridging.}",
             r"\label{tab:validation_audits}",
-            r"\end{table*}",
+            r"\end{table}",
         ]
         with open(os.path.join(TABLES_DIR, "table_validation_audits.tex"), "w", encoding="utf-8") as f:
             f.write("\n".join(va_lines) + "\n")
@@ -1680,6 +1707,14 @@ def generate_macros(strict=False, quiet=False):
             if hi is not None:
                 M.add(f"LossVarRetrainHypoDiffHigh{key}", f"{hi:+.1f}")
 
+    def _stack2(top, bot):
+        return (
+            r"{\renewcommand{\arraystretch}{0.92}"
+            r"\begin{tabular}[c]{@{}c@{}}"
+            f"{top}\\\\\\relax {bot}"
+            r"\end{tabular}}"
+        )
+
     if lv_rmse_map:
         def _lv_rmse_cell(row, with_diff=False):
             if not row:
@@ -1694,17 +1729,18 @@ def generate_macros(strict=False, quiet=False):
             hi = to_float(row.get("ci95_high_vs_se", ""))
             if d is None or lo is None or hi is None:
                 return f"{mr:.2f}"
-            return f"{mr:.2f} ({d:+.2f} [{lo:+.2f}, {hi:+.2f}])"
+            return _stack2(f"{mr:.2f} ({d:+.2f})", f"[{lo:+.2f}, {hi:+.2f}]")
 
         lv_lines = [
-            r"\begin{table*}[t]",
+            r"\begin{table}[htbp]",
             r"\centering",
-            r"\scriptsize",
+            r"\footnotesize",
             r"\begin{subtable}{\linewidth}\centering",
-            r"\setlength{\tabcolsep}{2.5pt}",
-            r"\begin{tabular}{lc c cccc}",
+            r"\setlength{\tabcolsep}{3pt}",
+            r"\renewcommand{\arraystretch}{1.28}",
+            r"\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}} lc c cccc}",
             r"\toprule",
-            r"Cohort & Hor.\ (h) & \texttt{HBML-SE} & \shortstack{\texttt{HBML-MAE}\\($\Delta$ [95\% CI])} & \shortstack{\texttt{HBML-Huber15}\\($\Delta$ [95\% CI])} & \shortstack{\texttt{HBML-MixEG}\\($\Delta$ [95\% CI])} & \shortstack{\texttt{MixEG-Interl}\\($\Delta$ [95\% CI])} \\",
+            r"Cohort & \shortstack{Hor.\\(h)} & \texttt{HBML-SE} & \shortstack{\texttt{HBML-MAE}\\($\Delta$ [95\% CI])} & \shortstack{\texttt{HBML-Huber15}\\($\Delta$ [95\% CI])} & \shortstack{\texttt{HBML-MixEG}\\($\Delta$ [95\% CI])} & \shortstack{\texttt{MixEG-Interl}\\($\Delta$ [95\% CI])} \\",
             r"\midrule",
         ]
         ds_lv = [("weinstock", "Weinstock 2016"), ("cgmacros", "CGMacros"), ("hall", "Hall 2018"), ("dubosson", "Dubosson T1D")]
@@ -1722,13 +1758,13 @@ def generate_macros(strict=False, quiet=False):
                 )
         lv_lines += [
             r"\bottomrule",
-            r"\end{tabular}",
+            r"\end{tabular*}",
             r"\caption{Online loss functions and direct Mixture-EG applied to cached Engine~v2.3 MSE base experts (full history).}",
             r"\end{subtable}",
             r"\par\medskip",
             r"\begin{subtable}{\linewidth}\centering",
-            r"\setlength{\tabcolsep}{5pt}",
-            r"\begin{tabular}{lccccccc}",
+            r"\setlength{\tabcolsep}{4pt}",
+            r"\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}} lcccccc}",
             r"\toprule",
             r"Cohort & Hor.\ (h) & \texttt{HBML-SE} & \texttt{HBML-AsymHypo} & \texttt{HBML-Pinball20} & \texttt{Uniform} & \texttt{FTL} \\",
             r"\midrule",
@@ -1747,13 +1783,21 @@ def generate_macros(strict=False, quiet=False):
                 )
         lv_lines += [
             r"\bottomrule",
-            r"\end{tabular}",
+            r"\end{tabular*}",
             r"\caption{Asymmetric and quantile online weighting (\texttt{HBML-AsymHypo}, \texttt{HBML-Pinball20}) vs.\ \texttt{Uniform} and \texttt{FTL} on cached MSE experts.}",
             r"\end{subtable}",
-            r"\par\medskip",
+            r"\caption{\textbf{Alternative online losses, direct Mixture-EG, and base-expert loss retraining across all four cohorts (full history).} In panel (a), $\Delta$ denotes paired cohort-mean RMSE difference relative to \texttt{HBML-SE} (negative indicates lower RMSE than \texttt{HBML-SE}), with 95\% participant-level bootstrap confidence intervals (retrained base-expert sensitivity continues below).}",
+            r"\label{tab:loss_variants}",
+            r"\end{table}",
+            r"",
+            r"\begin{table}[htbp]",
+            r"\ContinuedFloat",
+            r"\centering",
+            r"\footnotesize",
             r"\begin{subtable}{\linewidth}\centering",
-            r"\setlength{\tabcolsep}{5pt}",
-            r"\begin{tabular}{lccccccc}",
+            r"\setcounter{subtable}{2}",
+            r"\setlength{\tabcolsep}{4pt}",
+            r"\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}} lccccccc}",
             r"\toprule",
             r"Base-expert training loss & Cohort & \shortstack{0.5 h\\\texttt{HBML-SE}} & \shortstack{2 h\\\texttt{HBML-SE}} & \shortstack{5 h\\\texttt{HBML-SE}} & \shortstack{0.5 h\\\texttt{MixEG}} & \shortstack{2 h\\\texttt{MixEG}} & \shortstack{0.5 h\\\texttt{Uniform}} \\",
             r"\midrule",
@@ -1775,12 +1819,11 @@ def generate_macros(strict=False, quiet=False):
                 )
         lv_lines += [
             r"\bottomrule",
-            r"\end{tabular}",
+            r"\end{tabular*}",
             r"\caption{Full base-expert retraining sensitivity: retraining \texttt{XGBoost}, \texttt{NODE}, and \texttt{N-HITS} under \texttt{asym\_hypo}, \texttt{huber20}, and \texttt{pinball20} vs.\ cached MSE experts.}",
             r"\end{subtable}",
-            r"\caption{\textbf{Alternative online losses, direct Mixture-EG, and base-expert loss retraining across all four cohorts (full history).} In panel (a), $\Delta$ denotes paired cohort-mean RMSE difference relative to \texttt{HBML-SE} (negative indicates lower RMSE than \texttt{HBML-SE}), with 95\% participant-level bootstrap confidence intervals.}",
-            r"\label{tab:loss_variants}",
-            r"\end{table*}",
+            r"\caption{\textbf{Alternative online losses and base-expert loss retraining (continued).}}",
+            r"\end{table}",
         ]
         with open(os.path.join(TABLES_DIR, "table_loss_variants.tex"), "w", encoding="utf-8") as f:
             f.write("\n".join(lv_lines) + "\n")
@@ -1819,13 +1862,13 @@ def generate_macros(strict=False, quiet=False):
         lt_lines = [
             r"\begin{table}[htbp]",
             r"\centering",
-            r"\scriptsize",
-            r"\setlength{\tabcolsep}{4.5pt}",
-            r"\renewcommand{\arraystretch}{0.86}",
-            r"\begin{tabular}{lclcccc}",
+            r"\footnotesize",
+            r"\setlength{\tabcolsep}{4pt}",
+            r"\renewcommand{\arraystretch}{0.88}",
+            r"\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}} lclcccc}",
         ] + hdr + part1 + [
             r"\bottomrule",
-            r"\end{tabular}",
+            r"\end{tabular*}",
             r"\caption{\textbf{Forecasting performance across CGMacros glycemic-status subgroups.} Mean (SD) participant-level RMSE (mg/dL; minimum \NMinScored{} scored targets) across participants without diabetes ($n=\NCgmacrosNoDiabetes$), with prediabetes ($n=\NCgmacrosPrediabetes$), and with type 2 diabetes ($n=\NCgmacrosTypeTwo$, continued below). Bold values mark the lowest mean RMSE per configuration.}",
             r"\label{tab:rmse_cgmacros_subgroups}",
             r"\end{table}",
@@ -1835,13 +1878,13 @@ def generate_macros(strict=False, quiet=False):
                 r"\begin{table}[htbp]",
                 r"\ContinuedFloat",
                 r"\centering",
-                r"\scriptsize",
-                r"\setlength{\tabcolsep}{4.5pt}",
-                r"\renewcommand{\arraystretch}{0.86}",
-                r"\begin{tabular}{lclcccc}",
+                r"\footnotesize",
+                r"\setlength{\tabcolsep}{4pt}",
+                r"\renewcommand{\arraystretch}{0.88}",
+                r"\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}} lclcccc}",
             ] + hdr + cg_rmse_parts[2] + [
                 r"\bottomrule",
-                r"\end{tabular}",
+                r"\end{tabular*}",
                 r"\caption{\textbf{Forecasting performance across CGMacros glycemic-status subgroups (continued: type 2 diabetes, $n=\NCgmacrosTypeTwo$).}}",
                 r"\end{table}",
             ]
@@ -1871,8 +1914,8 @@ def generate_macros(strict=False, quiet=False):
             r"\begin{table}[htbp]",
             r"\centering",
             r"\footnotesize",
-            r"\setlength{\tabcolsep}{4.5pt}",
-            r"\begin{tabular}{lcccccccc}",
+            r"\setlength{\tabcolsep}{4pt}",
+            r"\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}} lcccccccc}",
             r"\toprule",
             r" & & & \multicolumn{6}{c}{\% in Region} \\",
             r"\cmidrule(lr){4-9}",
@@ -1880,7 +1923,7 @@ def generate_macros(strict=False, quiet=False):
             r"\midrule",
         ] + cg_ceg_rows_tex + [
             r"\bottomrule",
-            r"\end{tabular}",
+            r"\end{tabular*}",
             r"\caption{\textbf{Clarke Error Grid classification of HBML forecasts across CGMacros glycemic-status subgroups.} Mean participant-level region percentages across participants without diabetes ($n=\NCgmacrosNoDiabetes$), with prediabetes ($n=\NCgmacrosPrediabetes$), and with type 2 diabetes ($n=\NCgmacrosTypeTwo$).}",
             r"\label{tab:ega_cgmacros_subgroups}",
             r"\end{table}",
@@ -1902,46 +1945,57 @@ def generate_macros(strict=False, quiet=False):
             hi = to_float(row.get("diff_ci95_high_vs_pers", ""))
             if d is None or lo is None or hi is None:
                 return f"{s:.1f}"
-            return f"{s:.1f} ({d:+.1f} [{lo:+.1f}, {hi:+.1f}])"
+            return _stack2(f"{s:.1f} ({d:+.1f})", f"[{lo:+.1f}, {hi:+.1f}]")
 
-        lh_lines = [
-            r"\begin{table*}[t]",
-            r"\centering",
-            r"\scriptsize",
-            r"\resizebox{\linewidth}{!}{%",
-            r"\begin{tabular}{lcccccccc}",
-            r"\toprule",
-            r"Cohort & Base experts & Min.\ warn & FAR/day & \texttt{HBML-SE} ($\Delta$ vs Pers.) & \texttt{HBML-AsymHypo} ($\Delta$ vs Pers.) & \texttt{HBML-Pinball20} ($\Delta$ vs Pers.) & \texttt{HBML-MixEG} ($\Delta$ vs Pers.) & \texttt{Persistence} \\",
-            r"\midrule",
-        ]
         hypo_cfg = [
-            ("weinstock", "Weinstock 2016", [(0, 0.65), (0, 0.75), (15, 0.65), (15, 0.75)]),
-            ("hall", "Hall 2018", [(0, 0.65), (0, 0.75), (0, 1.0), (15, 0.65), (15, 0.75), (15, 1.0)]),
+            ("weinstock", "Weinstock 2016", [(0, 0.65), (0, 0.75), (15, 0.65), (15, 0.75)], True),
+            ("hall", "Hall 2018", [(0, 0.65), (0, 0.75), (0, 1.0), (15, 0.65), (15, 0.75), (15, 1.0)], False),
         ]
         src_specs = [("cached MSE", None)] + [(r"\texttt{" + dn.replace("_", r"\_") + "}", dn) for dn, _, _ in retrain_specs]
-        for ci, (ds_raw, ds_disp, pairs) in enumerate(hypo_cfg):
-            if ci > 0:
-                lh_lines.append(r"\midrule")
-            for wmin, fval in pairs:
+        lh_lines = []
+        for ci, (ds_raw, ds_disp, pairs, is_first) in enumerate(hypo_cfg):
+            lh_lines += [
+                r"\begin{table}[htbp]",
+                *([] if is_first else [r"\ContinuedFloat"]),
+                r"\centering",
+                r"\footnotesize",
+                r"\setlength{\tabcolsep}{2.5pt}",
+                r"\renewcommand{\arraystretch}{1.18}",
+                r"\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}} lccccccc}",
+                r"\toprule",
+                r"Base experts & \shortstack{Min.\\warn} & \shortstack{FAR\\/day} & \shortstack{\texttt{HBML-SE}\\($\Delta$ vs Pers.)} & \shortstack{\texttt{HBML-AsymHypo}\\($\Delta$ vs Pers.)} & \shortstack{\texttt{HBML-Pinball20}\\($\Delta$ vs Pers.)} & \shortstack{\texttt{HBML-MixEG}\\($\Delta$ vs Pers.)} & \texttt{Pers.} \\",
+                r"\midrule",
+            ]
+            for pi, (wmin, fval) in enumerate(pairs):
+                if pi > 0:
+                    lh_lines.append(r"\midrule")
                 wdisp = r"$\ge 5$~min" if wmin == 0 else rf"$\ge {wmin}$~min"
                 for sdisp, dn in src_specs:
                     src = lv_hypo_map if dn is None else {(d, w, f, m): retrain_hypo_map.get((dn, d, w, f, m)) for (rn, d, w, f, m) in retrain_hypo_map if rn == dn}
                     lh_lines.append(
-                        f"{ds_disp} & {sdisp} & {wdisp} & {fval:.2f} & "
+                        f"{sdisp} & {wdisp} & {fval:.2f} & "
                         f"{_lv_h_cell(src.get((ds_raw, wmin, fval, 'HBML-SE')), True)} & "
                         f"{_lv_h_cell(src.get((ds_raw, wmin, fval, 'HBML-AsymHypo')), True)} & "
                         f"{_lv_h_cell(src.get((ds_raw, wmin, fval, 'HBML-Pinball20')), True)} & "
                         f"{_lv_h_cell(src.get((ds_raw, wmin, fval, 'HBML-MixEG')), True)} & "
                         f"{_lv_h_cell(src.get((ds_raw, wmin, fval, 'Persistence')), False)} \\\\"
                     )
-        lh_lines += [
-            r"\bottomrule",
-            r"\end{tabular}%",
-            r"}",
-            r"\caption{\textbf{Matched false-alert rate (FAR) 30-minute hypoglycemia sensitivity across alternative online losses and base-expert training losses.} Values are pooled pre-onset sensitivity (\%) and difference vs.\ current-reading \texttt{Persistence} ($\Delta$ in pp with 2{,}000-resample participant-clustered bootstrap 95\% CI). ``---'' denotes FAR targets below a detector's lowest swept threshold.}",
-            r"\label{tab:loss_variants_hypo}",
-            r"\end{table*}",
-        ]
+            if is_first:
+                lh_lines += [
+                    r"\bottomrule",
+                    r"\end{tabular*}",
+                    rf"\caption{{\textbf{{Matched false-alert rate (FAR) 30-minute hypoglycemia sensitivity across alternative online losses and base-expert training losses ({ds_disp}).}} Values are pooled pre-onset sensitivity (\%) and difference vs.\ current-reading \texttt{{Persistence}} ($\Delta$ in pp with 2{{,}}000-resample participant-clustered bootstrap 95\% CI). ``---'' denotes FAR targets below a detector's lowest swept threshold ({hypo_cfg[1][1]} continues below).}}",
+                    r"\label{tab:loss_variants_hypo}",
+                    r"\end{table}",
+                    r"",
+                ]
+            else:
+                lh_lines += [
+                    r"\bottomrule",
+                    r"\end{tabular*}",
+                    rf"\caption{{\textbf{{Matched false-alert rate (FAR) 30-minute hypoglycemia sensitivity (continued: {ds_disp}).}}}}",
+                    r"\end{table}",
+                ]
         with open(os.path.join(TABLES_DIR, "table_loss_variants_hypo.tex"), "w", encoding="utf-8") as f:
             f.write("\n".join(lh_lines) + "\n")
 

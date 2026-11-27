@@ -378,55 +378,89 @@ def run_paired_analysis(n_boot=10000):
 
 
 def generate_latex_table(df_best, output_tex):
-    lines = [r"\begin{table*}[t]", r"\centering", r"\scriptsize",
-             r"\setlength{\tabcolsep}{2.5pt}",
-             r"\resizebox{\linewidth}{!}{%",
-             r"\begin{tabular}{lllclcccccccccc}", r"\toprule",
-             r"Dataset & Horizon & Context & $N$ & Best expert & $\Delta$ mean [95\% CI] & HL est.\ [95\% CI] & HBML better & $p$ & $p_{\mathrm{BH}}$ & $\Delta$ mean 90\% CI & $p_{\mathrm{TOST,boot}}$ & $p_{\mathrm{TOST}, t}$ & $p_{\mathrm{TOST, W}}$ & $p_{\mathrm{TOST}, 5\%}$ \\",
-             r"\midrule"]
+    def _fmt_tost(r, col):
+        tp = r.get(col, np.nan)
+        boot = col in ("tost_boot_p", "tost_rel5_p")
+        s = "$<10^{-4}$" if (boot and pd.notna(tp) and tp <= 1.0001 / 10000) else tex_p(tp)
+        if pd.notna(tp) and tp < ALPHA:
+            s = f"\\textbf{{\\boldmath {s}}}"
+        return s
+
+    rows_a, rows_b = [], []
     cur = None
     for _, r in df_best.iterrows():
         ds = DATASET_LABEL[r["dataset"]]
         if cur is not None and cur != ds:
-            lines.append(r"\midrule")
+            rows_a.append(r"\midrule")
+            rows_b.append(r"\midrule")
         cur = ds
         n = int(r["n_participants"])
         q = r["wilcoxon_p_bh_best_family"]
         q_str = tex_p(q)
         if pd.notna(q) and q < ALPHA:
             q_str = f"\\textbf{{\\boldmath {q_str}}}"
-
-        def _fmt_tost(col):
-            tp = r.get(col, np.nan)
-            boot = col in ("tost_boot_p", "tost_rel5_p")
-            s = "$<10^{-4}$" if (boot and pd.notna(tp) and tp <= 1.0001 / 10000) else tex_p(tp)
-            if pd.notna(tp) and tp < ALPHA:
-                s = f"\\textbf{{\\boldmath {s}}}"
-            return s
-
-        lines.append(
-            f"{ds} & {HORIZON_LABEL[r['horizon']]} & {CONTEXT_LABEL[r['context']]} & {n} & {r['expert']} & "
+        hz = "0.5 hr" if str(r["horizon"]) in ("0.5", "half") else HORIZON_LABEL[r["horizon"]]
+        ctx = "Full" if r["context"] == "full" else CONTEXT_LABEL[r["context"]]
+        rows_a.append(
+            f"{ds} & {hz} & {ctx} & {n} & {r['expert']} & "
             f"{r['paired_diff_mean']:+.2f} [{r['ci95_mean_low']:+.2f}, {r['ci95_mean_high']:+.2f}] & "
             f"{r['hodges_lehmann']:+.2f} [{r['hl_ci95_low']:+.2f}, {r['hl_ci95_high']:+.2f}] & "
-            f"{int(r['n_improved'])}/{n} ({r['pct_improved']:.1f}\\%) & {tex_p(r['wilcoxon_p'])} & {q_str} & "
+            f"{int(r['n_improved'])}/{n} ({r['pct_improved']:.1f}\\%) & {tex_p(r['wilcoxon_p'])} & {q_str} \\\\"
+        )
+        rows_b.append(
+            f"{ds} & {hz} & {ctx} & {n} & {r['expert']} & "
             f"[{r['tost_boot_ci90_low']:+.2f}, {r['tost_boot_ci90_high']:+.2f}] & "
-            f"{_fmt_tost('tost_boot_p')} & {_fmt_tost('tost_ttest_p')} & {_fmt_tost('tost_wilcoxon_p')} & "
-            f"{_fmt_tost('tost_rel5_p')} \\\\")
-    lines += [r"\bottomrule", r"\end{tabular}%", r"}",
-              r"\caption{\textbf{Participant-level paired comparisons and TOST equivalence between HBML and the best constituent expert.} "
-              r"For each configuration, the best expert is the constituent model with the lowest cohort mean RMSE across the $N$ retained participants. "
-              r"$\Delta = \text{RMSE}_{\text{best}} - \text{RMSE}_{\text{HBML}}$ (mg/dL) is computed per participant; "
-              r"positive values favor HBML and negative values favor the expert. Mean 95\% confidence intervals use BCa bootstrap "
-              r"(10,000 resamples); HL est.\ reports the exact Hodges--Lehmann pseudomedian of paired differences with its "
-              r"95\% Walsh interval (assuming symmetry of the paired differences). $p$: two-sided paired Wilcoxon signed-rank test; $p_{\mathrm{BH}}$: Benjamini--Hochberg "
-              r"adjustment across the configurations shown (zero differences dropped; exact null for $N \le 50$ without ties, otherwise normal approximation). "
-              f"Equivalence margin $\\pm {EQUIV_MARGIN_MGDL:.1f}$~mg/dL (chosen post hoc; exploratory). "
-              r"Primary equivalence estimand: the mean paired difference, tested by participant-level bootstrap TOST "
-              r"($\Delta$ mean 90\% CI: percentile interval, 10,000 resamples; $p_{\mathrm{TOST,boot}} < 0.05$ iff that interval lies inside the margin). "
-              r"Secondary: $p_{\mathrm{TOST}, t}$, paired $t$-test TOST (mean); $p_{\mathrm{TOST, W}}$, Wilcoxon TOST, which targets the pseudomedian and assumes symmetric differences; "
-              r"$p_{\mathrm{TOST}, 5\%}$, bootstrap TOST of the per-participant relative difference $\Delta_i/\text{RMSE}_{i,\text{best}}$ within $\pm 5\%$, i.e.\ each participant's own 5\% margin (bold: $p < 0.05$). "
-              r"``HBML better'' counts participants with strictly lower RMSE under HBML.}",
-              r"\label{tab:statistical_tests}", r"\end{table*}"]
+            f"{_fmt_tost(r, 'tost_boot_p')} & {_fmt_tost(r, 'tost_ttest_p')} & "
+            f"{_fmt_tost(r, 'tost_wilcoxon_p')} & {_fmt_tost(r, 'tost_rel5_p')} \\\\"
+        )
+
+    lines = [
+        r"\begin{table}[htbp]",
+        r"\centering",
+        r"\scriptsize",
+        r"\setlength{\tabcolsep}{2.5pt}",
+        r"\begin{subtable}{\linewidth}\centering",
+        r"\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}} lllclccccc}",
+        r"\toprule",
+        r"Dataset & Hor. & Ctx & $N$ & Best expert & $\Delta$ mean [95\% CI] & HL est.\ [95\% CI] & HBML better & $p$ & $p_{\mathrm{BH}}$ \\",
+        r"\midrule",
+    ] + rows_a + [
+        r"\bottomrule",
+        r"\end{tabular*}",
+        r"\caption{Paired superiority tests (two-sided Wilcoxon signed-rank test, Benjamini--Hochberg $p_{\mathrm{BH}}$) and BCa / Walsh 95\% confidence intervals.}",
+        r"\end{subtable}",
+        r"\end{table}",
+        r"\begin{table}[htbp]",
+        r"\ContinuedFloat",
+        r"\centering",
+        r"\footnotesize",
+        r"\setlength{\tabcolsep}{3.5pt}",
+        r"\begin{subtable}{\linewidth}\centering",
+        r"\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}} lllclccccc}",
+        r"\toprule",
+        r"Dataset & Hor. & Ctx & $N$ & Best expert & $\Delta$ mean 90\% CI & $p_{\mathrm{TOST,boot}}$ & $p_{\mathrm{TOST}, t}$ & $p_{\mathrm{TOST, W}}$ & $p_{\mathrm{TOST}, 5\%}$ \\",
+        r"\midrule",
+    ] + rows_b + [
+        r"\bottomrule",
+        r"\end{tabular*}",
+        r"\caption{Equivalence tests (TOST within $\pm 1.0$~mg/dL and per-participant $\pm 5\%$ margins).}",
+        r"\end{subtable}",
+        r"\caption{\textbf{Participant-level paired comparisons and TOST equivalence between HBML and the best constituent expert.} "
+        r"For each configuration, the best expert is the constituent model with the lowest cohort mean RMSE across the $N$ retained participants. "
+        r"$\Delta = \text{RMSE}_{\text{best}} - \text{RMSE}_{\text{HBML}}$ (mg/dL) is computed per participant; "
+        r"positive values favor HBML and negative values favor the expert. Mean 95\% confidence intervals use BCa bootstrap "
+        r"(10,000 resamples); HL est.\ reports the exact Hodges--Lehmann pseudomedian of paired differences with its "
+        r"95\% Walsh interval (assuming symmetry of the paired differences). $p$: two-sided paired Wilcoxon signed-rank test; $p_{\mathrm{BH}}$: Benjamini--Hochberg "
+        r"adjustment across the configurations shown (zero differences dropped; exact null for $N \le 50$ without ties, otherwise normal approximation). "
+        f"Equivalence margin $\\pm {EQUIV_MARGIN_MGDL:.1f}$~mg/dL (chosen post hoc; exploratory). "
+        r"Primary equivalence estimand: the mean paired difference, tested by participant-level bootstrap TOST "
+        r"($\Delta$ mean 90\% CI: percentile interval, 10,000 resamples; $p_{\mathrm{TOST,boot}} < 0.05$ iff that interval lies inside the margin). "
+        r"Secondary: $p_{\mathrm{TOST}, t}$, paired $t$-test TOST (mean); $p_{\mathrm{TOST, W}}$, Wilcoxon TOST, which targets the pseudomedian and assumes symmetric differences; "
+        r"$p_{\mathrm{TOST}, 5\%}$, bootstrap TOST of the per-participant relative difference $\Delta_i/\text{RMSE}_{i,\text{best}}$ within $\pm 5\%$, i.e.\ each participant's own 5\% margin (bold: $p < 0.05$). "
+        r"``HBML better'' counts participants with strictly lower RMSE under HBML.}",
+        r"\label{tab:statistical_tests}",
+        r"\end{table}",
+    ]
     with open(output_tex, "w") as f:
         f.write("\n".join(lines) + "\n")
 

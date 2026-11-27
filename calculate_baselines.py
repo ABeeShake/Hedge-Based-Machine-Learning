@@ -220,8 +220,9 @@ def evaluate_baselines(allow_mismatch=False):
 
 def generate_latex_table(df, output_tex):
     cols = ["persistence_rmse", "climatology_rmse", "uniform_rmse", "best_expert_rmse", "hbml_rmse"]
-    lines = [r"\begin{table*}[t]", r"\centering", r"\scriptsize", r"\begin{tabular}{lllc ccccc c}", r"\toprule",
-             r"Dataset & Horizon & Context & $N$ & Persistence & Running mean & Uniform ensemble & Best expert & HBML & HBML vs.\ persistence (\%) \\",
+    lines = [r"\begin{table}[htbp]", r"\centering", r"\footnotesize", r"\setlength{\tabcolsep}{3.5pt}",
+             r"\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}} llcc ccccc c}", r"\toprule",
+             r"Dataset & Hor. & Ctx & $N$ & Persistence & \shortstack{Running\\mean} & \shortstack{Uniform\\ensemble} & \shortstack{Best\\expert} & HBML & \shortstack{HBML vs.\\pers.\ (\%)} \\",
              r"\midrule"]
     cur = None
     for _, r in df.iterrows():
@@ -240,13 +241,13 @@ def generate_latex_table(df, output_tex):
             cells.append("---" if pd.isna(red) else f"{red:+.1f}")
         lines.append(f"{ds} & {HORIZON_LABEL[r['horizon']]} & {'Full' if r['context'] == 'full' else r['context'] + ' hr'} & {n_str} & "
                      + " & ".join(cells) + r" \\")
-    lines += [r"\bottomrule", r"\end{tabular}",
+    lines += [r"\bottomrule", r"\end{tabular*}",
               r"\caption{\textbf{HBML compared with naive and uniform-ensemble baselines.} Mean participant-level RMSE (mg/dL) across the $N$ retained participants ($\ge 288$ scored targets) for naive "
               r"persistence ($\hat{y}_{t+h} = y_t$), the expanding-window running participant mean ($\hat{y}_{t+h} = \bar{y}_{\mathcal{V}_t}$), an "
               r"equally weighted average of the seven constituent experts, the best constituent expert (lowest cohort mean RMSE), and "
               r"HBML. All methods are scored on the same participants and time points. Bold marks the lowest value in "
               r"each row. The last column is the relative RMSE change of HBML against persistence (positive: HBML lower).}",
-              r"\label{tab:baselines_comparison}", r"\end{table*}"]
+              r"\label{tab:baselines_comparison}", r"\end{table}"]
     with open(output_tex, "w") as f:
         f.write("\n".join(lines) + "\n")
 

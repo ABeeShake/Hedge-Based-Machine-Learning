@@ -112,19 +112,19 @@ def stage_evaluate(a):
 def write_tex(df):
     lab = {"weinstock": "Weinstock", "cgmacros": "CGMacros"}
     stoch = [m for m in ("NHITS", "NODE", "XGBoost", "HBML") if f"{m}_mean_rmse" in df.columns]
-    lines = [r"\begin{table*}[t]", r"\centering", r"\small",
-             r"\begin{tabular}{llcc" + "c" * len(stoch) + "}", r"\toprule",
+    lines = [r"\begin{table}[htbp]", r"\centering", r"\small", r"\setlength{\tabcolsep}{4pt}",
+             r"\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}} llcc" + "c" * len(stoch) + "}", r"\toprule",
              "Dataset & Horizon (hr) & $N$ & Seeds & " + " & ".join(stoch) + r" \\",
              r"\midrule"]
     for _, r in df.iterrows():
         cells = [f"{r[f'{m}_mean_rmse']:.2f} ($\\pm${r[f'{m}_within_patient_seed_sd']:.3f})" for m in stoch]
         lines.append(f"{lab[r.dataset]} & {r.horizon} & {int(r.n_participants)} & {int(r.n_seeds)} & "
                      + " & ".join(cells) + r" \\")
-    lines += [r"\bottomrule", r"\end{tabular}",
+    lines += [r"\bottomrule", r"\end{tabular*}",
               r"\caption{\textbf{Run-to-run stochastic seed stability.} Mean participant-level RMSE (mg/dL) and mean "
               r"within-participant across-seed standard deviation (in parentheses) across three random seeds on a fixed "
               r"subset of participants (full-history context).}",
-              r"\label{tab:seed_stability}", r"\end{table*}"]
+              r"\label{tab:seed_stability}", r"\end{table}"]
     with open(os.path.join(TABLES, "table_seed_stability.tex"), "w") as f:
         f.write("\n".join(lines) + "\n")
 

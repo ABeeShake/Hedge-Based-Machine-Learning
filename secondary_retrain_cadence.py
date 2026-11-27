@@ -118,21 +118,21 @@ def stage_evaluate(a):
 def write_tex(df, models):
     lab = {"weinstock": "Weinstock", "cgmacros": "CGMacros"}
     show = [m for m in models if m not in ("Persistence", "RunningMean")]
-    lines = [r"\begin{table*}[t]", r"\centering", r"\scriptsize",
-             r"\begin{tabular}{llc" + "c" * len(show) + "cc}", r"\toprule",
-             "Dataset & Horizon (hr) & Refit every & " + " & ".join(show) + r" & HBML $p$ vs 24 h & Training (s) \\",
+    lines = [r"\begin{table}[htbp]", r"\centering", r"\footnotesize", r"\setlength{\tabcolsep}{3.5pt}",
+             r"\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}} llc" + "c" * len(show) + "cc}", r"\toprule",
+             r"Dataset & Hor.\ (hr) & \shortstack{Refit\\every} & " + " & ".join(show) + r" & \shortstack{HBML $p$\\vs.\ 24 h} & \shortstack{Train\\(s)} \\",
              r"\midrule"]
     for _, r in df.iterrows():
         cells = [f"{r[f'{m}_rmse']:.2f}" for m in show]
         p = r.get("HBML_p_vs_ref", np.nan)
         lines.append(f"{lab[r.dataset]} & {r.horizon} & {r.hours:g} h & " + " & ".join(cells)
                      + f" & {ev.tex_p(p) if r.interval != 288 else 'ref.'} & {r.fit_s_per_participant:.0f} \\\\")
-    lines += [r"\bottomrule", r"\end{tabular}",
+    lines += [r"\bottomrule", r"\end{tabular*}",
               r"\caption{\textbf{Sensitivity to the expert refit interval.} Mean participant-level RMSE (mg/dL) on a fixed "
               r"random subset of participants, full-history context, with experts refitted every 6, 24 (main analysis) or "
               r"48 hours. $p$: two-sided Wilcoxon signed-rank test of HBML against the 24-hour interval. Training: total "
               r"expert refit time per participant (seconds).}",
-              r"\label{tab:retrain_cadence}", r"\end{table*}"]
+              r"\label{tab:retrain_cadence}", r"\end{table}"]
     with open(os.path.join(TABLES, "table_retrain_cadence.tex"), "w") as f:
         f.write("\n".join(lines) + "\n")
 
