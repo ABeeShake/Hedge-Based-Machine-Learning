@@ -204,11 +204,13 @@ def run_loss_variants(datasets, outputs_root, out_dir, n_boot=2000, full_only=Fa
                         for m_name in sweep_models:
                             pr = model_preds[m_name]
                             for thr in ecw.SWEEP_THRESHOLDS:
-                                r = ecw.hypo_events_patient(
+                                r = ecw.evaluate_hypo_trajectory(
                                     y, pr, mask, h_steps, thresh=thr,
                                     compute_parkes=False, diabetes_type=dt_type,
                                     warning_minutes=ecw.WARNING_MINUTES,
                                 )
+                                if r is None:
+                                    continue
                                 r["model"] = m_name
                                 r["threshold_mgdl"] = thr
                                 r["pid"] = pid
